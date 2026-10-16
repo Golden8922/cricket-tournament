@@ -1,0 +1,944 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>College Cricket Tournament - Live Scores, Teams & Stats</title>
+  <meta name="description" content="Mobile-first College Cricket Tournament app: Live ball-by-ball scoring, fair team auto-balancing, student skill registration, and player stats.">
+  <meta name="theme-color" content="#0B132B">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="CricketApp">
+  
+  <!-- PWA Manifest & Icons -->
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+  <link rel="apple-touch-icon" href="icons/icon.jpg">
+
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="css/styles.css">
+
+  <!-- Firebase Compat SDK for Standalone Zero-Build Compatibility -->
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+</head>
+<body>
+  <div id="app">
+    <!-- Top Sticky Header -->
+    <header class="top-header">
+      <a href="#live" class="brand-wrapper" id="brand-home-link">
+        <img src="icons/icon.svg" alt="College Cricket Logo" class="brand-icon">
+        <div class="brand-title">
+          <span>COLLEGE CRICKET</span>
+          <span class="brand-sub">TOURNAMENT APP</span>
+        </div>
+      </a>
+
+      <div class="header-actions">
+        <!-- Live Connection Status Pill -->
+        <div id="connection-status-pill" class="status-badge" title="Connection Status">
+          <span class="status-dot"></span>
+          <span id="connection-status-text">Live</span>
+        </div>
+
+        <!-- High-Contrast Outdoor / Theme Toggle -->
+        <button id="theme-toggle-btn" class="icon-btn" title="Toggle Outdoor Contrast / Dark Mode" aria-label="Toggle Theme">
+          <span id="theme-icon">☀️</span>
+        </button>
+
+        <!-- Staff Login / Profile Pill Button -->
+        <button id="staff-auth-btn" class="login-pill-btn" aria-label="Staff Login">
+          <span id="auth-btn-icon">🔐</span>
+          <span id="auth-btn-label">Staff Login</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Offline Reconnecting Banner -->
+    <div id="offline-alert-banner" class="offline-banner">
+      <span>⚡ You are offline. Showing cached tournament scores. Reconnecting...</span>
+    </div>
+
+    <!-- PWA Install Banner -->
+    <div id="pwa-install-banner" class="install-banner">
+      <div class="install-banner-text">
+        <strong>Install App</strong> for faster mobile scoring & offline access
+      </div>
+      <div style="display: flex; gap: 8px;">
+        <button id="btn-pwa-install" class="install-banner-btn">Install</button>
+        <button id="btn-pwa-dismiss" class="icon-btn" style="width: 32px; height: 32px; min-height: 32px; font-size: 0.9rem;" title="Dismiss">✕</button>
+      </div>
+    </div>
+
+    <!-- Main Views Container -->
+    <main class="main-content">
+
+      <!-- ==============================================
+           1. LIVE SCOREBOARD VIEW (Public, FR-17, FR-18)
+           ============================================== -->
+      <section id="view-live" class="view-panel active">
+        <div class="section-header">
+          <h1 class="section-title">
+            <span>🔴 Live Match</span>
+          </h1>
+          <button id="btn-refresh-live" class="btn-secondary" style="padding: 6px 12px; min-height: 36px; font-size: 0.8rem;">
+            🔄 Refresh
+          </button>
+        </div>
+
+        <!-- Live Match Container -->
+        <div id="live-match-container">
+          <!-- Rendered dynamically via app.js -->
+        </div>
+
+        <!-- Recent Completed Highlights or Secondary Live Matches -->
+        <div id="secondary-matches-container"></div>
+      </section>
+
+      <!-- ==============================================
+           POINTS TABLE & NET RUN RATE VIEW (ICC NRR Standard)
+           ============================================== -->
+      <section id="view-table" class="view-panel">
+        <div class="section-header">
+          <div>
+            <h1 class="section-title">📊 Points Table & Standings</h1>
+            <p class="section-subtitle">Tournament ranking, points & ICC Net Run Rate (NRR)</p>
+          </div>
+          <button id="btn-refresh-table" class="btn-secondary" style="padding: 6px 12px; min-height: 36px; font-size: 0.8rem;">
+            🔄 Refresh Table
+          </button>
+        </div>
+
+        <div class="card" style="padding: 0; overflow: hidden; margin-bottom: 16px;">
+          <div class="table-responsive">
+            <table class="cricket-table points-table" id="tournament-points-table">
+              <thead>
+                <tr>
+                  <th style="width: 44px; text-align: center;">#</th>
+                  <th>Team</th>
+                  <th class="num-cell" title="Matches Played">P</th>
+                  <th class="num-cell" title="Matches Won">W</th>
+                  <th class="num-cell" title="Matches Lost">L</th>
+                  <th class="num-cell" title="Matches Tied">T</th>
+                  <th class="num-cell" title="Points (2 for Win, 1 for Tie)">Pts</th>
+                  <th class="num-cell" title="ICC Net Run Rate">NRR</th>
+                  <th class="num-cell" title="Runs Scored / Overs Faced">For</th>
+                  <th class="num-cell" title="Runs Conceded / Overs Bowled">Against</th>
+                </tr>
+              </thead>
+              <tbody id="points-table-body">
+                <!-- Rendered dynamically via app.js -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- NRR Explainer Card -->
+        <div class="card" style="background: rgba(16, 185, 129, 0.05); border: 1px solid rgba(16, 185, 129, 0.2);">
+          <div style="display: flex; gap: 10px; align-items: flex-start;">
+            <div style="font-size: 1.3rem;">ℹ️</div>
+            <div style="font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5;">
+              <strong style="color: var(--text-primary); display: block; margin-bottom: 2px;">Official ICC Net Run Rate (NRR) Formula</strong>
+              NRR = (Total Runs Scored ÷ Total Overs Faced) − (Total Runs Conceded ÷ Total Overs Bowled).<br>
+              <em>Note: If a team is bowled out (All Out) before completing their allotted overs, they are charged the full quota of overs for the innings.</em>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==============================================
+           2. TEAMS & PLAYERS VIEW
+           ============================================== -->
+      <section id="view-teams" class="view-panel">
+        <div class="section-header">
+          <div>
+            <h1 class="section-title">🛡️ Teams & Squads</h1>
+            <p class="section-subtitle">Tournament squads, leadership, rosters & player directory</p>
+          </div>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button id="btn-open-add-team-modal" class="btn-primary" style="padding: 8px 14px; min-height: 38px; font-size: 0.85rem;">
+              ➕ Add Team
+            </button>
+            <button id="btn-open-add-player-modal" class="btn-secondary" style="padding: 8px 14px; min-height: 38px; font-size: 0.85rem; border-color: var(--pitch-green); color: var(--pitch-green);">
+              👤 Add Player
+            </button>
+            <button id="btn-export-teams" class="btn-secondary" style="padding: 8px 14px; min-height: 38px; font-size: 0.85rem;" title="Export rosters for WhatsApp or print">
+              📤 Export Rosters
+            </button>
+          </div>
+        </div>
+
+        <!-- Teams Roster Grid -->
+        <div class="teams-grid" id="teams-roster-container">
+          <!-- Rendered dynamically via app.js -->
+        </div>
+
+        <!-- Unassigned Players Section -->
+        <div id="unassigned-players-card" class="card" style="margin-top: 20px; display: none;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <h3 style="font-size: 1rem; font-weight: 700; color: var(--gold-amber); margin: 0;">
+              ⚠️ Unassigned Players (<span id="unassigned-count">0</span>)
+            </h3>
+            <button class="btn-secondary" style="padding: 4px 10px; font-size: 0.75rem; min-height: 30px;" onclick="App.openAddPlayerModal('unassigned')">
+              ➕ Add to Pool
+            </button>
+          </div>
+          <div id="unassigned-chips-container" style="display: flex; flex-wrap: wrap; gap: 8px;">
+            <!-- Rendered dynamically -->
+          </div>
+        </div>
+      </section>
+
+      <!-- ==============================================
+           3. PLAYERS LEADERBOARD VIEW (Public, FR-20, FR-21, FR-22)
+           ============================================== -->
+      <section id="view-players" class="view-panel">
+        <div class="section-header">
+          <div>
+            <h1 class="section-title">👥 Player Leaderboard</h1>
+            <p class="section-subtitle">Tournament statistics & player directory</p>
+          </div>
+          <div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;">
+            <button id="btn-player-tab-add" class="btn-primary" style="padding: 6px 12px; min-height: 34px; font-size: 0.78rem;">
+              ➕ Add Player
+            </button>
+            <button id="sort-players-runs" class="btn-secondary" style="padding: 6px 10px; min-height: 34px; font-size: 0.75rem;">
+              🏏 Sort Runs
+            </button>
+            <button id="sort-players-wickets" class="btn-secondary" style="padding: 6px 10px; min-height: 34px; font-size: 0.75rem;">
+              ⚡ Sort Wickets
+            </button>
+            <button id="sort-players-rating" class="btn-secondary" style="padding: 6px 10px; min-height: 34px; font-size: 0.75rem;">
+              ⭐ Sort Rating
+            </button>
+          </div>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 12px;">
+          <input type="text" id="players-search-input" class="form-input" placeholder="Search player name, roll, role..." style="min-height: 42px;">
+        </div>
+
+        <div class="card" style="padding: 0; overflow: hidden;">
+          <div class="table-responsive">
+            <table class="cricket-table" id="players-leaderboard-table">
+              <thead>
+                <tr>
+                  <th>Player</th>
+                  <th>Role</th>
+                  <th class="num-cell">Draft Rating</th>
+                  <th class="num-cell">Runs (BF)</th>
+                  <th class="num-cell">4s / 6s</th>
+                  <th class="num-cell">SR</th>
+                  <th class="num-cell">Wkts</th>
+                  <th class="num-cell">Overs</th>
+                  <th class="num-cell">Econ</th>
+                  <th class="admin-only-col" style="display: none;">Action</th>
+                </tr>
+              </thead>
+              <tbody id="players-table-body">
+                <!-- Rendered dynamically via app.js -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==============================================
+           4. MATCH HISTORY VIEW (Public, FR-19, FR-21, FR-22)
+           ============================================== -->
+      <section id="view-history" class="view-panel">
+        <div class="section-header">
+          <h1 class="section-title">🏆 Match History</h1>
+          <div style="display: flex; gap: 8px;">
+            <input type="text" id="history-search-input" class="form-input" placeholder="Search team or match..." style="padding: 6px 12px; min-height: 38px; font-size: 0.85rem; width: 180px;">
+          </div>
+        </div>
+
+        <div id="history-matches-list">
+          <!-- Rendered dynamically via app.js -->
+        </div>
+      </section>
+
+      <!-- ==============================================
+           6. UMPIRE SCORING VIEW (Staff Umpire & Admin, FR-9 to FR-16, FR-24)
+           ============================================== -->
+      <section id="view-scoring" class="view-panel">
+        <!-- If No Active Match: Match Creator Setup -->
+        <div id="umpire-match-setup" class="card" style="display: none;">
+          <h2 style="font-size: 1.25rem; font-weight: 800; margin-bottom: 14px;">🏏 Start New Match</h2>
+          
+          <div class="form-group">
+            <label class="form-label" for="match-team-a">Team A (Bats 1st) <span class="req">*</span></label>
+            <select id="match-team-a" class="form-select"></select>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="match-team-b">Team B (Fields 1st) <span class="req">*</span></label>
+            <select id="match-team-b" class="form-select"></select>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="match-overs">Overs Limit <span class="req">*</span></label>
+            <select id="match-overs" class="form-select">
+              <option value="5">5 Overs</option>
+              <option value="6">6 Overs</option>
+              <option value="8">8 Overs</option>
+              <option value="10" selected>10 Overs</option>
+              <option value="12">12 Overs</option>
+              <option value="15">15 Overs</option>
+              <option value="20">20 Overs (T20)</option>
+            </select>
+          </div>
+
+          <button id="btn-start-match" class="btn-primary btn-full" style="margin-top: 8px;">
+            🚀 Create & Start Match
+          </button>
+        </div>
+
+        <!-- Active Scoring Console (FR-9 to FR-16) -->
+        <div id="umpire-live-console" class="scoring-console" style="display: none;">
+          <!-- Top Match Status Header -->
+          <div class="console-header-card">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <span id="umpire-innings-label" style="font-weight: 800; color: var(--gold-amber); font-size: 0.85rem;">
+                  1st INNINGS
+                </span>
+                <div id="umpire-match-title" style="font-size: 1.1rem; font-weight: 800;">
+                  Team A vs Team B
+                </div>
+              </div>
+
+              <!-- Wake lock indicator (FR-16) -->
+              <div id="wake-lock-status-badge" class="wake-lock-pill" title="Screen stays awake while scoring">
+                <span>🔆 Screen Awake</span>
+              </div>
+            </div>
+
+            <!-- Big Live Score -->
+            <div id="umpire-big-score" class="current-match-score-big">
+              0/0 <span style="font-size: 1.3rem; color: var(--text-secondary);">(0.0 ov)</span>
+            </div>
+
+            <!-- Target info for 2nd innings -->
+            <div id="umpire-target-info" style="text-align: center; font-size: 0.85rem; font-weight: 600; color: var(--gold-amber); display: none;">
+              Target: 0 runs
+            </div>
+          </div>
+
+          <!-- Batsmen and Bowler Selectors (FR-10, FR-13) -->
+          <div class="scoring-selectors-grid">
+            <!-- Striker -->
+            <div class="selector-box active-strike" id="striker-selector-box">
+              <label for="select-striker">⭐ Striker (On Strike)</label>
+              <select id="select-striker" class="form-select" style="min-height: 42px; font-weight: 700;"></select>
+              <div id="striker-live-stats" style="font-size: 0.75rem; color: var(--pitch-green); margin-top: 4px; font-family: var(--font-mono);">
+                0 (0) - 4s: 0, 6s: 0
+              </div>
+            </div>
+
+            <!-- Non-Striker -->
+            <div class="selector-box" id="non-striker-selector-box">
+              <label for="select-non-striker">Non-Striker</label>
+              <select id="select-non-striker" class="form-select" style="min-height: 42px;"></select>
+              <div id="non-striker-live-stats" style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 4px; font-family: var(--font-mono);">
+                0 (0) - 4s: 0, 6s: 0
+              </div>
+            </div>
+          </div>
+
+          <!-- Bowler Selector & Strike Swap Override -->
+          <div style="display: flex; gap: 10px; align-items: flex-end; margin-bottom: 8px;">
+            <div class="selector-box" style="flex: 1;">
+              <label for="select-bowler">⚡ Current Bowler</label>
+              <select id="select-bowler" class="form-select" style="min-height: 42px;"></select>
+              <div id="bowler-live-stats" style="font-size: 0.75rem; color: var(--electric-blue); margin-top: 4px; font-family: var(--font-mono);">
+                0.0 ov - 0 wkts, 0 runs
+              </div>
+            </div>
+
+            <button id="btn-swap-strike" class="btn-secondary" style="height: 42px; min-height: 42px; padding: 0 14px; font-size: 0.8rem; white-space: nowrap;" title="Swap Strike manually">
+              ⇄ Swap Strike
+            </button>
+          </div>
+
+          <!-- Modifier Buttons (FR-11, FR-12: Wide, No ball, Bye, Leg bye tapped first) -->
+          <div class="modifier-buttons-row">
+            <button id="mod-wide" class="mod-btn" data-mod="wide">Wide</button>
+            <button id="mod-noball" class="mod-btn" data-mod="noball">No Ball</button>
+            <button id="mod-bye" class="mod-btn" data-mod="bye">Bye</button>
+            <button id="mod-legbye" class="mod-btn" data-mod="legbye">Leg Bye</button>
+          </div>
+
+          <!-- HUGE SCORING KEYPAD (FR-11: 0, 1, 2, 3, 4, 6, OUT, Undo; >= 64px tall!) -->
+          <div class="scoring-keypad">
+            <button class="score-key key-0" data-run="0">0</button>
+            <button class="score-key" data-run="1">1</button>
+            <button class="score-key" data-run="2">2</button>
+            <button class="score-key" data-run="3">3</button>
+            <button class="score-key key-boundary-4" data-run="4">4</button>
+            <button class="score-key key-boundary-6" data-run="6">6</button>
+            <button class="score-key key-out" id="key-out">OUT</button>
+            <button class="score-key key-undo" id="key-undo" title="Undo last ball (FR-15)">↺ Undo</button>
+          </div>
+
+          <!-- Current Over Balls Reel -->
+          <div class="card" style="padding: 10px 14px; margin-bottom: 10px;">
+            <div style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; margin-bottom: 6px;">
+              This Over Deliveries:
+            </div>
+            <div id="umpire-over-balls" class="balls-reel" style="min-height: 38px;">
+              <span style="color: var(--text-muted); font-size: 0.8rem;">Ready for delivery 1</span>
+            </div>
+          </div>
+
+          <!-- Innings / Match Controls (FR-14) -->
+          <div class="match-control-actions">
+            <button id="btn-end-innings" class="btn-secondary" style="border-color: var(--gold-amber); color: var(--gold-amber);">
+              🏁 End Innings
+            </button>
+            <button id="btn-finish-match" class="btn-danger">
+              🏆 Finish Match
+            </button>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- Bottom Navigation Bar -->
+    <nav class="bottom-nav" id="bottom-navbar">
+      <a href="#live" class="nav-item active" data-view="view-live">
+        <span class="nav-icon">🔴</span>
+        <span>Live</span>
+      </a>
+      <a href="#table" class="nav-item" data-view="view-table" id="nav-item-table">
+        <span class="nav-icon">📊</span>
+        <span>Table</span>
+      </a>
+      <a href="#teams" class="nav-item" data-view="view-teams" id="nav-item-teams">
+        <span class="nav-icon">🛡️</span>
+        <span>Teams</span>
+      </a>
+      <a href="#players" class="nav-item" data-view="view-players">
+        <span class="nav-icon">👥</span>
+        <span>Players</span>
+      </a>
+      <a href="#history" class="nav-item" data-view="view-history">
+        <span class="nav-icon">🏆</span>
+        <span>History</span>
+      </a>
+      <a href="#score" class="nav-item staff-only" data-view="view-scoring" id="nav-item-scoring">
+        <span class="nav-icon">⚡</span>
+        <span>Score</span>
+      </a>
+    </nav>
+
+    <!-- ==============================================
+         MODALS & DIALOGS
+         ============================================== -->
+
+    <!-- Modal: Add New Team -->
+    <div id="modal-add-team" class="modal-overlay">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <h2 class="modal-title">🏆 Add New Team</h2>
+          <button class="modal-close-btn" data-close-modal="modal-add-team">✕</button>
+        </div>
+        <form id="form-add-team">
+          <div class="form-group">
+            <label class="form-label" for="new-team-name">Team Name <span class="req">*</span></label>
+            <input type="text" id="new-team-name" class="form-input" placeholder="e.g. Royal Strikers, CS Blasters" required autocomplete="off">
+          </div>
+          <button type="submit" class="btn-primary btn-full" style="margin-top: 10px;">
+            <span>➕ Create Team</span>
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Modal: Rename Team -->
+    <div id="modal-rename-team" class="modal-overlay">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <h2 class="modal-title">✏️ Rename Team</h2>
+          <button class="modal-close-btn" data-close-modal="modal-rename-team">✕</button>
+        </div>
+        <form id="form-rename-team">
+          <input type="hidden" id="rename-team-id">
+          <div class="form-group">
+            <label class="form-label" for="rename-team-input">New Team Name <span class="req">*</span></label>
+            <input type="text" id="rename-team-input" class="form-input" required autocomplete="off">
+          </div>
+          <button type="submit" class="btn-primary btn-full" style="margin-top: 10px;">
+            <span>Save Team Name</span>
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Modal: Add New Player -->
+    <div id="modal-add-player" class="modal-overlay">
+      <div class="modal-dialog" style="max-width: 520px;">
+        <div class="modal-header">
+          <div>
+            <h2 class="modal-title">👤 Add Player</h2>
+            <div style="font-size: 0.8rem; color: var(--text-secondary);">Add player to tournament and assign team</div>
+          </div>
+          <button class="modal-close-btn" data-close-modal="modal-add-player">✕</button>
+        </div>
+        <form id="form-add-player">
+          <div class="form-group">
+            <label class="form-label" for="player-input-name">Full Name <span class="req">*</span></label>
+            <input type="text" id="player-input-name" class="form-input" placeholder="e.g. Rahul Sharma" required autocomplete="name">
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="player-input-roll">Roll / Enrollment No <span class="req">*</span></label>
+            <input type="text" id="player-input-roll" class="form-input" placeholder="e.g. 22CS045" required autocomplete="off">
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+            <div class="form-group">
+              <label class="form-label" for="player-input-role">Playing Role <span class="req">*</span></label>
+              <select id="player-input-role" class="form-select" required>
+                <option value="Batter">🏏 Batter</option>
+                <option value="Bowler">⚡ Bowler</option>
+                <option value="All-rounder" selected>⭐ All-rounder</option>
+                <option value="Wicketkeeper">🧤 Wicketkeeper</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="player-input-team">Assign to Team</label>
+              <select id="player-input-team" class="form-select">
+                <option value="unassigned">-- Unassigned Pool --</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Highest Level Played -->
+          <div class="slider-group">
+            <div class="slider-header">
+              <label class="form-label" for="player-input-exp" style="margin-bottom: 0;">Experience Level</label>
+              <span id="player-exp-display" class="slider-val-badge">Level 2: College</span>
+            </div>
+            <input type="range" id="player-input-exp" class="range-slider" min="0" max="5" value="2" step="1">
+            <div style="display: flex; justify-content: space-between; font-size: 0.68rem; color: var(--text-muted); margin-top: 4px;">
+              <span>0: Gully</span><span>1: School</span><span>2: College</span><span>3: Dist</span><span>4: State</span><span>5: Nat</span>
+            </div>
+          </div>
+
+          <!-- Batting, Bowling, Fielding ratings -->
+          <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;">
+            <div class="slider-group" style="padding: 8px;">
+              <div class="slider-header" style="margin-bottom: 4px;">
+                <label style="font-size: 0.75rem; font-weight: 700;">Batting</label>
+                <span id="player-bat-display" class="slider-val-badge" style="font-size: 0.75rem; padding: 1px 4px;">3</span>
+              </div>
+              <input type="range" id="player-input-bat" class="range-slider" min="1" max="5" value="3" step="1">
+            </div>
+
+            <div class="slider-group" style="padding: 8px;">
+              <div class="slider-header" style="margin-bottom: 4px;">
+                <label style="font-size: 0.75rem; font-weight: 700;">Bowling</label>
+                <span id="player-bowl-display" class="slider-val-badge" style="font-size: 0.75rem; padding: 1px 4px;">3</span>
+              </div>
+              <input type="range" id="player-input-bowl" class="range-slider" min="1" max="5" value="3" step="1">
+            </div>
+
+            <div class="slider-group" style="padding: 8px;">
+              <div class="slider-header" style="margin-bottom: 4px;">
+                <label style="font-size: 0.75rem; font-weight: 700;">Fielding</label>
+                <span id="player-field-display" class="slider-val-badge" style="font-size: 0.75rem; padding: 1px 4px;">3</span>
+              </div>
+              <input type="range" id="player-input-field" class="range-slider" min="1" max="5" value="3" step="1">
+            </div>
+          </div>
+
+          <label class="checkbox-card" style="margin: 10px 0;">
+            <input type="checkbox" id="player-input-keeper">
+            <div>
+              <strong style="font-size: 0.85rem;">Wicketkeeper</strong>
+              <span style="font-size: 0.72rem; color: var(--text-muted); display: block;">Reliable wicketkeeping skills (+1 bonus)</span>
+            </div>
+          </label>
+
+          <div class="rating-preview-banner" style="margin: 10px 0;">
+            <div style="font-size: 0.85rem; font-weight: 700;">Draft Rating</div>
+            <div id="player-rating-preview-val" class="rating-preview-score">14</div>
+          </div>
+
+          <button type="submit" class="btn-primary btn-full">
+            <span>➕ Save Player</span>
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Modal: Edit Team (Admin & Umpire) -->
+    <div id="modal-edit-team" class="modal-overlay">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <div>
+            <h2 class="modal-title">✏️ Edit Team Details</h2>
+            <div style="font-size: 0.8rem; color: var(--text-secondary);">Update team name, leadership & motto</div>
+          </div>
+          <button class="modal-close-btn" data-close-modal="modal-edit-team">✕</button>
+        </div>
+        <form id="form-edit-team">
+          <input type="hidden" id="edit-team-id">
+          
+          <div class="form-group">
+            <label class="form-label" for="edit-team-name">Team Name <span class="req">*</span></label>
+            <input type="text" id="edit-team-name" class="form-input" required autocomplete="off">
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="edit-team-captain">Team Captain</label>
+            <select id="edit-team-captain" class="form-select">
+              <option value="">-- No Captain Selected --</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="edit-team-vice-captain">Vice Captain</label>
+            <select id="edit-team-vice-captain" class="form-select">
+              <option value="">-- No Vice-Captain Selected --</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="edit-team-motto">Team Motto / Slogan</label>
+            <input type="text" id="edit-team-motto" class="form-input" placeholder="e.g. Strike with Precision!">
+          </div>
+
+          <button type="submit" class="btn-primary btn-full" style="margin-top: 10px;">
+            <span>💾 Save Team Changes</span>
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Modal: Edit Player (Admin & Umpire) -->
+    <div id="modal-edit-player" class="modal-overlay">
+      <div class="modal-dialog" style="max-width: 520px;">
+        <div class="modal-header">
+          <div>
+            <h2 class="modal-title">✏️ Edit Player</h2>
+            <div style="font-size: 0.8rem; color: var(--text-secondary);">Update player name, year, role & ratings</div>
+          </div>
+          <button class="modal-close-btn" data-close-modal="modal-edit-player">✕</button>
+        </div>
+        <form id="form-edit-player">
+          <input type="hidden" id="edit-player-id">
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+            <div class="form-group">
+              <label class="form-label" for="edit-player-name">Player Name (with Year) <span class="req">*</span></label>
+              <input type="text" id="edit-player-name" class="form-input" placeholder="e.g. Ritik 3, Golden 2" required>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="edit-player-roll">Roll / Enrollment No <span class="req">*</span></label>
+              <input type="text" id="edit-player-roll" class="form-input" required>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="edit-player-fullname">Full / Original Name</label>
+            <input type="text" id="edit-player-fullname" class="form-input" placeholder="e.g. Ritik Singh">
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;">
+            <div class="form-group">
+              <label class="form-label" for="edit-player-role">Role <span class="req">*</span></label>
+              <select id="edit-player-role" class="form-select" required>
+                <option value="Batter">🏏 Batter</option>
+                <option value="Bowler">⚡ Bowler</option>
+                <option value="All-rounder">⭐ All-rounder</option>
+                <option value="Wicketkeeper">🧤 Wicketkeeper</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="edit-player-year">Year</label>
+              <select id="edit-player-year" class="form-select">
+                <option value="1st Year">1st Year</option>
+                <option value="2nd Year">2nd Year</option>
+                <option value="3rd Year">3rd Year</option>
+                <option value="4th Year">4th Year</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="edit-player-team">Team</label>
+              <select id="edit-player-team" class="form-select">
+                <option value="unassigned">-- Unassigned --</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Highest Level Played -->
+          <div class="slider-group">
+            <div class="slider-header">
+              <label class="form-label" for="edit-player-exp" style="margin-bottom: 0;">Experience Level</label>
+              <span id="edit-player-exp-display" class="slider-val-badge">Level 2</span>
+            </div>
+            <input type="range" id="edit-player-exp" class="range-slider" min="0" max="5" value="2" step="1">
+            <div style="display: flex; justify-content: space-between; font-size: 0.68rem; color: var(--text-muted); margin-top: 4px;">
+              <span>0: Gully</span><span>1: School</span><span>2: College</span><span>3: Dist</span><span>4: State</span><span>5: Nat</span>
+            </div>
+          </div>
+
+          <!-- Batting, Bowling, Fielding ratings -->
+          <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;">
+            <div class="slider-group" style="padding: 8px;">
+              <div class="slider-header" style="margin-bottom: 4px;">
+                <label style="font-size: 0.75rem; font-weight: 700;">Batting</label>
+                <span id="edit-player-bat-display" class="slider-val-badge" style="font-size: 0.75rem; padding: 1px 4px;">3</span>
+              </div>
+              <input type="range" id="edit-player-bat" class="range-slider" min="1" max="5" value="3" step="1">
+            </div>
+
+            <div class="slider-group" style="padding: 8px;">
+              <div class="slider-header" style="margin-bottom: 4px;">
+                <label style="font-size: 0.75rem; font-weight: 700;">Bowling</label>
+                <span id="edit-player-bowl-display" class="slider-val-badge" style="font-size: 0.75rem; padding: 1px 4px;">3</span>
+              </div>
+              <input type="range" id="edit-player-bowl" class="range-slider" min="1" max="5" value="3" step="1">
+            </div>
+
+            <div class="slider-group" style="padding: 8px;">
+              <div class="slider-header" style="margin-bottom: 4px;">
+                <label style="font-size: 0.75rem; font-weight: 700;">Fielding</label>
+                <span id="edit-player-field-display" class="slider-val-badge" style="font-size: 0.75rem; padding: 1px 4px;">3</span>
+              </div>
+              <input type="range" id="edit-player-field" class="range-slider" min="1" max="5" value="3" step="1">
+            </div>
+          </div>
+
+          <label class="checkbox-card" style="margin: 10px 0;">
+            <input type="checkbox" id="edit-player-keeper">
+            <div>
+              <strong style="font-size: 0.85rem;">Wicketkeeper</strong>
+              <span style="font-size: 0.72rem; color: var(--text-muted); display: block;">Reliable wicketkeeping skills (+1 bonus)</span>
+            </div>
+          </label>
+
+          <div class="rating-preview-banner" style="margin: 10px 0;">
+            <div style="font-size: 0.85rem; font-weight: 700;">Calculated Draft Rating</div>
+            <div id="edit-player-rating-preview" class="rating-preview-score">14</div>
+          </div>
+
+          <button type="submit" class="btn-primary btn-full">
+            <span>💾 Save Player Changes</span>
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- 1. Staff Login Modal (FR-23) -->
+    <div id="modal-staff-login" class="modal-overlay">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <h2 class="modal-title">🔐 Staff Login</h2>
+          <button class="modal-close-btn" data-close-modal="modal-staff-login">✕</button>
+        </div>
+
+        <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 16px;">
+          Enter your name and the staff password to manage matches and teams. Spectators do not need an account.
+        </p>
+
+        <form id="staff-login-form">
+          <div class="form-group">
+            <label class="form-label" for="login-name">Your Name <span class="req">*</span></label>
+            <input type="text" id="login-name" class="form-input" placeholder="e.g. Ritik, Golden, Sharma Sir" required autocomplete="name">
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="login-role">Sign In As <span class="req">*</span></label>
+            <select id="login-role" class="form-select" required>
+              <option value="umpire" selected>⚡ Match Umpire (Live Scoring & Squad Updates)</option>
+              <option value="admin">👑 Tournament Admin (Full Management & Auto-balance)</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="login-password">Password <span class="req">*</span></label>
+            <input type="password" id="login-password" class="form-input" placeholder="Enter password (sitare@2029)" required autocomplete="current-password">
+          </div>
+
+          <button type="submit" class="btn-primary btn-full" style="margin-top: 8px;">
+            🔐 Sign In
+          </button>
+        </form>
+
+        <div style="margin-top: 16px; text-align: center; border-top: 1px solid var(--border-subtle); padding-top: 12px;">
+          <button id="btn-open-firebase-config" style="font-size: 0.75rem; color: var(--text-muted); text-decoration: underline;">
+            ⚙️ Connect Custom Firebase Config
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2. Wicket Fall Modal (FR-11, FR-13) -->
+    <div id="modal-wicket" class="modal-overlay">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <h2 class="modal-title" style="color: var(--leather-red);">🚨 Wicket Details</h2>
+          <button class="modal-close-btn" data-close-modal="modal-wicket">✕</button>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="wicket-type-select">Dismissal Method</label>
+          <select id="wicket-type-select" class="form-select">
+            <option value="bowled" selected>Bowled</option>
+            <option value="caught">Caught</option>
+            <option value="lbw">LBW</option>
+            <option value="runout">Run Out</option>
+            <option value="stumped">Stumped</option>
+            <option value="hitwicket">Hit Wicket</option>
+          </select>
+        </div>
+
+        <div class="form-group" id="runout-player-group" style="display: none;">
+          <label class="form-label" for="runout-player-select">Who was Run Out?</label>
+          <select id="runout-player-select" class="form-select">
+            <option value="striker">Striker</option>
+            <option value="nonStriker">Non-Striker</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="select-next-batter">Next Batsman In <span class="req">*</span></label>
+          <select id="select-next-batter" class="form-select"></select>
+        </div>
+
+        <button type="button" id="btn-confirm-wicket" class="btn-primary btn-full" style="background: linear-gradient(135deg, var(--leather-red), #B91C1C);">
+          Confirm Wicket
+        </button>
+      </div>
+    </div>
+
+    <!-- 3. Full Match Scorecard Modal (FR-17, FR-19) -->
+    <div id="modal-scorecard" class="modal-overlay">
+      <div class="modal-dialog" style="max-width: 680px;">
+        <div class="modal-header">
+          <div>
+            <h2 class="modal-title" id="scorecard-modal-title">Match Scorecard</h2>
+            <div id="scorecard-modal-subtitle" style="font-size: 0.8rem; color: var(--text-secondary);"></div>
+          </div>
+          <button class="modal-close-btn" data-close-modal="modal-scorecard">✕</button>
+        </div>
+
+        <div id="scorecard-modal-body">
+          <!-- Filled dynamically -->
+        </div>
+
+        <div style="margin-top: 16px; display: flex; gap: 8px;">
+          <button id="btn-scorecard-share" class="btn-share">
+            <span>📤 Share Scorecard on WhatsApp</span>
+          </button>
+          <button class="btn-secondary" data-close-modal="modal-scorecard">
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Match Completed & Net Run Rate (NRR) Breakdown -->
+    <div id="modal-match-nrr" class="modal-overlay">
+      <div class="modal-dialog" style="max-width: 580px;">
+        <div class="modal-header">
+          <div>
+            <h2 class="modal-title">🏆 Match Completed!</h2>
+            <div id="match-nrr-subtitle" style="font-size: 0.85rem; color: var(--pitch-green); font-weight: 700; margin-top: 2px;"></div>
+          </div>
+          <button class="modal-close-btn" data-close-modal="modal-match-nrr">✕</button>
+        </div>
+
+        <!-- Match NRR Impact Card -->
+        <div style="background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 14px; margin-bottom: 14px;">
+          <h3 style="font-size: 0.95rem; font-weight: 800; color: var(--gold-amber); margin: 0 0 10px 0; display: flex; align-items: center; gap: 6px;">
+            <span>⚡ Match Net Run Rate (NRR) Impact</span>
+          </h3>
+          <div id="match-nrr-breakdown">
+            <!-- Filled dynamically -->
+          </div>
+        </div>
+
+        <!-- Updated Tournament Standings Quick Preview -->
+        <div style="background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 14px; margin-bottom: 14px;">
+          <h3 style="font-size: 0.95rem; font-weight: 800; margin: 0 0 10px 0; display: flex; align-items: center; gap: 6px;">
+            <span>📊 Updated Tournament Standings</span>
+          </h3>
+          <div id="match-nrr-standings-preview">
+            <!-- Filled dynamically -->
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <button class="btn-primary" style="flex: 1;" onclick="App.closeModal('modal-match-nrr'); App.navigateTo('view-table');">
+            📊 View Full Points Table
+          </button>
+          <button class="btn-secondary" style="flex: 1;" onclick="App.closeModal('modal-match-nrr'); App.navigateTo('view-history');">
+            🏆 View History
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 4. Move Player Modal (FR-7) -->
+    <div id="modal-move-player" class="modal-overlay">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <h2 class="modal-title">Move Player</h2>
+          <button class="modal-close-btn" data-close-modal="modal-move-player">✕</button>
+        </div>
+
+        <p id="move-player-info" style="font-weight: 700; margin-bottom: 12px;"></p>
+
+        <div class="form-group">
+          <label class="form-label" for="select-target-team">Assign to Team:</label>
+          <select id="select-target-team" class="form-select"></select>
+        </div>
+
+        <button type="button" id="btn-confirm-move" class="btn-primary btn-full">
+          Confirm Move
+        </button>
+      </div>
+    </div>
+
+    <!-- 5. Firebase Custom Config Modal -->
+    <div id="modal-firebase-config" class="modal-overlay">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <h2 class="modal-title">⚙️ Firebase Settings</h2>
+          <button class="modal-close-btn" data-close-modal="modal-firebase-config">✕</button>
+        </div>
+        <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 12px;">
+          Paste your Firebase web config JSON below to link your live Firestore project:
+        </p>
+        <textarea id="firebase-config-textarea" class="form-input" rows="8" placeholder='{"apiKey": "...", "authDomain": "...", "projectId": "..."}' style="font-family: var(--font-mono); font-size: 0.8rem;"></textarea>
+        <div style="display: flex; gap: 8px; margin-top: 12px;">
+          <button id="btn-save-firebase-config" class="btn-primary" style="flex: 1;">Save & Connect</button>
+          <button id="btn-clear-firebase-config" class="btn-danger">Clear</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast Notifications Container -->
+    <div id="toast-container" class="toast-container"></div>
+  </div>
+
+  <!-- Application Logic Modules -->
+  <script src="js/seed.js"></script>
+  <script src="js/engine.js"></script>
+  <script src="js/teams.js"></script>
+  <script src="js/db.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
