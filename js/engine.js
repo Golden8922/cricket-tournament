@@ -74,12 +74,16 @@ const CricketEngine = {
     let currentOverIndex = 0;
     let overRunsConceded = 0;
     let overLegalBalls = 0;
+    let overWickets = 0;
+    let overDroppedCatches = 0;
+    let overBowlerId = null;
+    let overBowlerName = '';
 
     balls.forEach((ball, idx) => {
       const runs = Number(ball.runs) || 0;
-      const extraType = ball.extraType; // null | 'wide' | 'noball' | 'bye' | 'legbye'
+      const extraType = ball.extraType; // null | 'wide' | 'noball' | 'bye' | 'legbye' | 'penalty'
       const isWicket = Boolean(ball.isWicket);
-      const isLegal = (extraType !== 'wide' && extraType !== 'noball');
+      const isLegal = (extraType !== 'wide' && extraType !== 'noball' && extraType !== 'penalty' && !ball.isPenalty);
 
       let runsForTeam = runs;
       let runsForBatter = 0;
@@ -95,6 +99,10 @@ const CricketEngine = {
 
       const batter = stats.batters[ball.batterId];
       const bowler = stats.bowlers[ball.bowlerId];
+      if (ball.bowlerId) {
+        overBowlerId = ball.bowlerId;
+        overBowlerName = ball.bowlerName || '';
+      }
 
       if (extraType === 'wide') {
         // Wide: 1 run penalty + any additional runs ran
@@ -111,7 +119,7 @@ const CricketEngine = {
         stats.extras.noball += 1;
         stats.extras.total += 1;
         if (batter) {
-          batter.balls += 1; // PRD: batter faced delivery
+          batter.balls += 1; // batter faced delivery
         }
       } else if (extraType === 'bye') {
         // Bye: legal delivery, runs to team extras, 0 to batter, 0 charged to bowler
@@ -127,6 +135,11 @@ const CricketEngine = {
         stats.extras.legbye += runs;
         stats.extras.total += runs;
         if (batter) batter.balls += 1;
+      } else if (extraType === 'penalty' || ball.isPenalty) {
+        // Extra/Penalty runs: does not consume a legal ball, added to extras & team total
+        runsForTeam = runs;
+        runsForBowler = runs;
+        stats.extras.total += runs;
       } else {
         // Standard legal delivery off the bat
         runsForTeam = runs;
@@ -162,9 +175,15 @@ const CricketEngine = {
       // Total runs
       stats.totalRuns += runsForTeam;
 
+      // Handle Dropped Catch
+      if (ball.isDroppedCatch || ball.droppedCatch) {
+        overDroppedCatches += 1;
+      }
+
       // Handle Wicket
       if (isWicket) {
         stats.wickets += 1;
+        overWickets += 1;
         const outId = ball.outPlayerId || ball.batterId;
         const outPlayer = stats.batters[outId];
         const wType = ball.wicketType || 'out';
@@ -173,6 +192,8 @@ const CricketEngine = {
           outPlayer.isOut = true;
           if (wType === 'runout') {
             outPlayer.dismissal = `run out`;
+          } else if (wType === 'retired' || wType === 'declared') {
+            outPlayer.dismissal = `retired / declared`;
           } else if (wType === 'bowled') {
             outPlayer.dismissal = `b ${ball.bowlerName || 'Bowler'}`;
           } else if (wType === 'caught') {
@@ -186,8 +207,8 @@ const CricketEngine = {
           }
         }
 
-        // Bowler gets wicket unless runout
-        if (bowler && wType !== 'runout') {
+        // Bowler gets wicket unless runout or retired/declared
+        if (bowler && wType !== 'runout' && wType !== 'retired' && wType !== 'declared') {
           bowler.wickets += 1;
         }
 
@@ -208,22 +229,45 @@ const CricketEngine = {
         stats.recentBalls.shift();
       }
 
-      // Check if over ended
+      // Check if over ended (6 legal balls)
       if (isLegal && overLegalBalls === 6) {
         if (bowler && overRunsConceded === 0) {
           bowler.maidens += 1;
         }
         stats.oversHistory.push({
           overNum: currentOverIndex + 1,
+          bowlerId: overBowlerId,
+          bowlerName: overBowlerName,
           balls: [...stats.currentOverBalls],
-          runs: overRunsConceded
+          runs: overRunsConceded,
+          wickets: overWickets,
+          droppedCatches: overDroppedCatches,
+          inProgress: false
         });
         stats.currentOverBalls = [];
         overRunsConceded = 0;
         overLegalBalls = 0;
+        overWickets = 0;
+        overDroppedCatches = 0;
+        overBowlerId = null;
+        overBowlerName = '';
         currentOverIndex += 1;
       }
     });
+
+    // In-progress over if any balls bowled
+    if (stats.currentOverBalls.length > 0) {
+      stats.oversHistory.push({
+        overNum: currentOverIndex + 1,
+        bowlerId: overBowlerId,
+        bowlerName: overBowlerName,
+        balls: [...stats.currentOverBalls],
+        runs: overRunsConceded,
+        wickets: overWickets,
+        droppedCatches: overDroppedCatches,
+        inProgress: true
+      });
+    }
 
     // Calculate strike rates
     Object.values(stats.batters).forEach(b => {
@@ -250,6 +294,13 @@ const CricketEngine = {
   createBallBadge(ball, totalRuns, isWicket) {
     if (isWicket) {
       return { text: "W", type: "wicket", tooltip: `WICKET (${ball.wicketType || 'Out'})` };
+    }
+    if (ball.isDroppedCatch || ball.droppedCatch) {
+      const runTxt = totalRuns > 0 ? `${totalRuns} (DC)` : "DC";
+      return { text: runTxt, type: "dropped", tooltip: `🖐️ Dropped Catch! (${totalRuns} runs)` };
+    }
+    if (ball.extraType === 'penalty' || ball.isPenalty) {
+      return { text: `+${totalRuns}`, type: "penalty", tooltip: `Extra/Penalty Runs (+${totalRuns})` };
     }
     if (ball.extraType === 'wide') {
       const extra = totalRuns > 1 ? `+${totalRuns - 1}` : '';

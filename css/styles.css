@@ -1028,12 +1028,12 @@ button:active {
   margin-bottom: 4px;
 }
 
-/* Modifier Buttons Bar (Wide, No Ball, Bye, Leg Bye) */
+/* Modifier Buttons Bar (Wide, No Ball, Drop Catch, Bye, Leg Bye, Extra Runs) */
 .modifier-buttons-row {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 
 .mod-btn {
@@ -1048,6 +1048,12 @@ button:active {
   display: flex;
   align-items: center;
   justify-content: center;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.mod-btn:hover {
+  border-color: var(--pitch-green);
 }
 
 .mod-btn.active {
@@ -1055,6 +1061,89 @@ button:active {
   color: #000;
   border-color: var(--gold-amber);
   box-shadow: 0 0 12px var(--gold-glow);
+}
+
+.mod-btn.mod-wide-btn {
+  border-color: rgba(0, 230, 153, 0.4);
+  color: var(--pitch-green);
+}
+
+.mod-btn.mod-drop-catch {
+  border-color: rgba(255, 170, 0, 0.4);
+  color: var(--gold-amber);
+}
+
+.mod-btn.mod-drop-catch.active {
+  background: var(--gold-amber);
+  color: #000;
+}
+
+.mod-btn.mod-extra-runs {
+  border-color: rgba(0, 204, 255, 0.4);
+  color: var(--electric-blue);
+}
+
+.btn-subtle-action {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--gold-amber);
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-subtle-action:hover {
+  background: rgba(255, 170, 0, 0.15);
+  border-color: var(--gold-amber);
+}
+
+/* Over-by-Over History Cards */
+.over-history-card {
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  margin-bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.over-history-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.85rem;
+  font-weight: 700;
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 6px;
+}
+
+.over-history-balls {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* Ball badge styles for Dropped Catch and Penalty */
+.ball-badge.dropped {
+  background: rgba(255, 170, 0, 0.25);
+  color: #ffaa00;
+  border-color: #ffaa00;
+  font-weight: 800;
+  font-size: 0.72rem;
+}
+
+.ball-badge.penalty {
+  background: rgba(0, 204, 255, 0.25);
+  color: #00ccff;
+  border-color: #00ccff;
+  font-weight: 800;
+  font-size: 0.75rem;
 }
 
 /* Huge Scoring Keypad (PRD: Scoring buttons about 64px tall) */

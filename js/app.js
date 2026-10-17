@@ -972,10 +972,16 @@ const App = {
       });
     }
 
-    // 2. Modifier Buttons (Wide, No ball, Bye, Leg bye)
+    // 2. Modifier Buttons (Wide, No ball, Drop Catch, Bye, Leg bye)
     document.querySelectorAll('.modifier-buttons-row .mod-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const mod = btn.getAttribute('data-mod');
+        if (mod === 'wide') {
+          // Instant Wide (+1): 1-tap immediately scores wide delivery and updates scoreboard
+          this.recordDelivery(0, 'wide');
+          return;
+        }
+
         if (this.currentModifier === mod) {
           // Deselect
           this.currentModifier = null;
@@ -988,6 +994,53 @@ const App = {
         }
       });
     });
+
+    // Extra Runs Modal Open
+    const btnOpenExtra = document.getElementById('btn-open-extra-runs');
+    if (btnOpenExtra) {
+      btnOpenExtra.addEventListener('click', () => {
+        this.openModal('modal-extra-runs');
+      });
+    }
+
+    const btnCustomExtra = document.getElementById('btn-submit-custom-extra');
+    if (btnCustomExtra) {
+      btnCustomExtra.addEventListener('click', () => {
+        const val = Number(document.getElementById('custom-extra-runs-input')?.value);
+        if (val && val > 0) {
+          this.recordExtraRuns(val);
+        }
+      });
+    }
+
+    // Declare / Replace Batsman Buttons
+    const btnDeclareStriker = document.getElementById('btn-declare-striker');
+    if (btnDeclareStriker) {
+      btnDeclareStriker.addEventListener('click', () => {
+        this.openDeclareBatsmanModal('striker');
+      });
+    }
+
+    const btnDeclareNonStriker = document.getElementById('btn-declare-non-striker');
+    if (btnDeclareNonStriker) {
+      btnDeclareNonStriker.addEventListener('click', () => {
+        this.openDeclareBatsmanModal('nonStriker');
+      });
+    }
+
+    const btnConfirmDeclare = document.getElementById('btn-confirm-declare-retire');
+    if (btnConfirmDeclare) {
+      btnConfirmDeclare.addEventListener('click', () => {
+        this.confirmDeclareBatsman(true);
+      });
+    }
+
+    const btnConfirmSimpleSwap = document.getElementById('btn-confirm-simple-swap');
+    if (btnConfirmSimpleSwap) {
+      btnConfirmSimpleSwap.addEventListener('click', () => {
+        this.confirmDeclareBatsman(false);
+      });
+    }
 
     // 3. Scoring Keypad Numbers: 0, 1, 2, 3, 4, 6
     document.querySelectorAll('.scoring-keypad .score-key[data-run]').forEach(btn => {
@@ -1063,6 +1116,15 @@ const App = {
 
     if (btnFinishMatch) {
       btnFinishMatch.addEventListener('click', () => this.handleFinishMatch());
+    }
+
+    const btnDeleteLiveMatch = document.getElementById('btn-delete-live-match');
+    if (btnDeleteLiveMatch) {
+      btnDeleteLiveMatch.addEventListener('click', () => {
+        if (this.activeScoringMatch) {
+          this.confirmDeleteMatch(this.activeScoringMatch.id);
+        }
+      });
     }
 
     // 9. Confirm Wicket Modal Button
@@ -1227,13 +1289,19 @@ const App = {
         overBallsContainer.innerHTML = `<span style="color: var(--text-muted); font-size: 0.8rem;">Ready for delivery 1</span>`;
       }
     }
+
+    // Populate Over-by-Over History in Umpire Console
+    const umpireOversLog = document.getElementById('umpire-overs-history-log');
+    if (umpireOversLog) {
+      umpireOversLog.innerHTML = this.renderOversHistoryHTML(currentInningsStats, pMap);
+    }
   },
 
   // Record a delivery (FR-11, FR-12, FR-13)
-  async recordDelivery(runs) {
+  async recordDelivery(runs, forcedModifier = null) {
     if (!this.activeScoringMatch) return;
     const match = this.activeScoringMatch;
-    const mod = this.currentModifier;
+    const mod = forcedModifier || this.currentModifier;
 
     this.vibrate(40);
 
@@ -1245,10 +1313,13 @@ const App = {
       currentInnings: match.currentInnings
     };
 
-    const isLegal = (mod !== 'wide' && mod !== 'noball');
+    const isDroppedCatch = (mod === 'dropcatch');
+    const extraType = (mod === 'dropcatch') ? null : mod;
+    const isLegal = (extraType !== 'wide' && extraType !== 'noball');
+
     let runsForTeam = runs;
-    if (mod === 'wide') runsForTeam = 1 + runs;
-    if (mod === 'noball') runsForTeam = 1 + runs;
+    if (extraType === 'wide') runsForTeam = 1 + runs;
+    if (extraType === 'noball') runsForTeam = 1 + runs;
 
     const ball = {
       id: 'ball_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
@@ -1257,19 +1328,19 @@ const App = {
       nonStrikerId: match.nonStrikerId,
       bowlerId: match.bowlerId,
       runs: runs,
-      extraType: mod,
+      extraType: extraType,
       isWicket: false,
       isLegal: isLegal,
       totalRuns: runsForTeam,
-      snapshot: snapshot
+      isDroppedCatch: isDroppedCatch,
+      droppedCatch: isDroppedCatch,
+      snapshot: snapshot,
+      timestamp: Date.now()
     };
 
     // Calculate if strike swaps (FR-13)
-    // On normal/bye/legbye: odd runs swap strike
-    // On wide: only if runs (additional runs ran) is odd
-    // On no ball: if runs off bat is odd
     let shouldSwapStrike = false;
-    if (mod === 'wide') {
+    if (extraType === 'wide') {
       shouldSwapStrike = (runs % 2 === 1);
     } else {
       shouldSwapStrike = (runs % 2 === 1);
@@ -1288,12 +1359,18 @@ const App = {
     this.currentModifier = null;
     document.querySelectorAll('.modifier-buttons-row .mod-btn').forEach(b => b.classList.remove('active'));
 
+    // Toast notifications
+    if (forcedModifier === 'wide') {
+      this.showToast('Wide ball! +1 Run added to score.', 'info');
+    } else if (isDroppedCatch) {
+      this.showToast(`🖐️ Dropped Catch recorded! ${runs} runs scored.`, 'info');
+    }
+
     // Check if over ended (6 legal balls in current over)
     const currentInningsBalls = match.balls.filter(b => b.innings === match.currentInnings);
     const legalBallsInCurrentInnings = currentInningsBalls.filter(b => b.isLegal).length;
 
     if (isLegal && (legalBallsInCurrentInnings % 6 === 0)) {
-      // Over ended!
       // Strike swaps at end of over (FR-13)
       const temp = match.strikerId;
       match.strikerId = match.nonStrikerId;
@@ -1314,6 +1391,162 @@ const App = {
 
     // Check automatic innings finish or target chase (FR-14)
     this.checkAutoMatchCompletion();
+  },
+
+  // Record Extra / Penalty Runs without increasing ball count
+  async recordExtraRuns(runs) {
+    if (!this.activeScoringMatch) {
+      this.showToast('No active match currently being scored', 'error');
+      return;
+    }
+    const match = this.activeScoringMatch;
+    const numRuns = Math.max(1, Number(runs) || 1);
+
+    const snapshot = {
+      strikerId: match.strikerId,
+      nonStrikerId: match.nonStrikerId,
+      bowlerId: match.bowlerId,
+      currentInnings: match.currentInnings
+    };
+
+    const ball = {
+      id: 'ball_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
+      innings: match.currentInnings,
+      batterId: match.strikerId,
+      nonStrikerId: match.nonStrikerId,
+      bowlerId: match.bowlerId,
+      runs: numRuns,
+      extraType: 'penalty',
+      isLegal: false,
+      isPenalty: true,
+      isWicket: false,
+      totalRuns: numRuns,
+      snapshot: snapshot,
+      timestamp: Date.now()
+    };
+
+    match.balls = match.balls || [];
+    match.balls.push(ball);
+
+    await AppDB.updateMatch(match.id, {
+      balls: match.balls
+    });
+
+    this.closeModal('modal-extra-runs');
+    this.vibrate(25);
+    this.showToast(`+${numRuns} Extra/Penalty Runs added (Ball count not increased)`, 'success');
+    this.renderScoringConsole();
+  },
+
+  // Open Declare / Replace Batsman Modal
+  openDeclareBatsmanModal(targetRole = 'striker') {
+    if (!this.activeScoringMatch) {
+      this.showToast('No active match currently loaded', 'error');
+      return;
+    }
+    const match = this.activeScoringMatch;
+    this._declareTargetRole = targetRole;
+
+    const is2nd = (match.currentInnings === 2);
+    const battingPlayerIds = is2nd ? (match.teamBPlayerIds || []) : (match.teamAPlayerIds || []);
+    const battingTeamName = is2nd ? match.teamB : match.teamA;
+
+    const currentId = (targetRole === 'striker') ? match.strikerId : match.nonStrikerId;
+    const otherId = (targetRole === 'striker') ? match.nonStrikerId : match.strikerId;
+
+    const players = AppDB.getLocalPlayers();
+    const pMap = {};
+    players.forEach(p => { pMap[p.id] = p; });
+
+    const currentP = pMap[currentId];
+    const roleLabel = (targetRole === 'striker') ? '⭐ Striker (On Strike)' : 'Non-Striker';
+
+    const titleElem = document.getElementById('declare-modal-title');
+    if (titleElem) {
+      titleElem.textContent = `⭐ Declare / Replace ${roleLabel}`;
+    }
+
+    const infoElem = document.getElementById('declare-current-info');
+    if (infoElem) {
+      infoElem.innerHTML = `
+        <div style="font-weight: 700; color: var(--pitch-green); margin-bottom: 2px;">
+          ${roleLabel}: <strong>${currentP ? this.escapeHtml(currentP.name) : 'None'}</strong>
+        </div>
+        <div style="font-size: 0.78rem; color: var(--text-muted);">
+          Team: <strong>${this.escapeHtml(battingTeamName)}</strong>
+        </div>
+      `;
+    }
+
+    const selectElem = document.getElementById('select-replacement-player');
+    if (selectElem) {
+      // Find candidate players from batting squad (exclude the other batsman currently at the crease)
+      const candidateIds = battingPlayerIds.filter(pid => pid !== otherId);
+
+      selectElem.innerHTML = candidateIds.map(pid => {
+        const p = pMap[pid];
+        const isCurrent = (pid === currentId);
+        return `<option value="${pid}" ${isCurrent ? 'selected' : ''}>${p ? this.escapeHtml(p.name) : pid} ${isCurrent ? '(Currently At Crease)' : ''}</option>`;
+      }).join('');
+    }
+
+    this.openModal('modal-declare-batsman');
+  },
+
+  // Confirm Declare or Replace Batsman
+  async confirmDeclareBatsman(isRetire = true) {
+    if (!this.activeScoringMatch) return;
+    const match = this.activeScoringMatch;
+    const targetRole = this._declareTargetRole || 'striker';
+    const selectElem = document.getElementById('select-replacement-player');
+    const newPlayerId = selectElem ? selectElem.value : null;
+
+    if (!newPlayerId) {
+      this.showToast('Please select a player to come to the crease', 'error');
+      return;
+    }
+
+    const currentId = (targetRole === 'striker') ? match.strikerId : match.nonStrikerId;
+
+    if (isRetire && currentId && currentId !== newPlayerId) {
+      // Record retired/declared delivery in match balls
+      const ball = {
+        id: 'ball_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
+        innings: match.currentInnings,
+        batterId: currentId,
+        outPlayerId: currentId,
+        nonStrikerId: match.nonStrikerId,
+        bowlerId: match.bowlerId,
+        runs: 0,
+        extraType: null,
+        isWicket: true,
+        wicketType: 'retired',
+        isLegal: false,
+        totalRuns: 0,
+        timestamp: Date.now()
+      };
+      match.balls = match.balls || [];
+      match.balls.push(ball);
+    }
+
+    // Set new player to the crease
+    if (targetRole === 'striker') {
+      match.strikerId = newPlayerId;
+    } else {
+      match.nonStrikerId = newPlayerId;
+    }
+
+    await AppDB.updateMatch(match.id, {
+      balls: match.balls,
+      strikerId: match.strikerId,
+      nonStrikerId: match.nonStrikerId
+    });
+
+    this.closeModal('modal-declare-batsman');
+    const players = AppDB.getLocalPlayers();
+    const p = players.find(x => x.id === newPlayerId);
+    this.showToast(`${p ? p.name : 'Player'} is now at the crease!`, 'success');
+    this.renderScoringConsole();
   },
 
   // Open Wicket Modal (FR-11, FR-13)
@@ -1660,6 +1893,56 @@ const App = {
   },
 
   // ==========================================
+  // OVER-BY-OVER HISTORY HELPERS
+  // ==========================================
+  renderOversHistoryHTML(inStats, pMap = {}) {
+    if (!inStats || !inStats.oversHistory || inStats.oversHistory.length === 0) {
+      return `<div style="text-align: center; color: var(--text-muted); font-size: 0.82rem; padding: 12px 8px;">No deliveries bowled in this innings yet</div>`;
+    }
+
+    return `
+      <div class="overs-history-container" style="display: flex; flex-direction: column; gap: 8px;">
+        ${inStats.oversHistory.map(over => {
+          const bowlerObj = pMap[over.bowlerId];
+          const bowlerName = bowlerObj ? bowlerObj.name : (over.bowlerName || over.bowlerId || 'Bowler');
+          const isProgress = over.inProgress;
+          const wktText = over.wickets > 0 ? `<span style="color: var(--leather-red); font-weight: 700;"> • ${over.wickets} Wkt${over.wickets > 1 ? 's' : ''}</span>` : '';
+          const droppedText = over.droppedCatches > 0 ? `<span style="color: #ff9800; font-weight: 700; background: rgba(255,152,0,0.12); padding: 1px 6px; border-radius: 4px; margin-left: 6px;">🖐️ ${over.droppedCatches} Catch Dropped</span>` : '';
+
+          return `
+            <div class="over-history-card card" style="padding: 10px 12px; margin: 0; background: var(--bg-surface-2); border: 1px solid ${isProgress ? 'var(--pitch-green)' : 'var(--border-subtle)'}; border-radius: var(--radius-sm);">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <span style="font-weight: 800; font-size: 0.88rem; color: var(--text-primary);">Over ${over.overNum}</span>
+                  ${isProgress ? '<span class="status-badge" style="background: rgba(0, 230, 153, 0.15); color: var(--pitch-green); font-size: 0.68rem; padding: 1px 6px;">Current</span>' : ''}
+                  <span style="font-size: 0.8rem; color: var(--electric-blue); font-weight: 600;">⚡ ${this.escapeHtml(bowlerName)}</span>
+                </div>
+                <div style="font-size: 0.8rem; color: var(--text-secondary);">
+                  <strong style="color: var(--text-primary);">${over.runs} runs</strong>${wktText}${droppedText}
+                </div>
+              </div>
+              <div class="balls-reel" style="gap: 5px; min-height: 32px; padding: 2px 0;">
+                ${over.balls.map(b => `<div class="ball-badge ${b.type}" title="${b.tooltip || ''}">${b.text}</div>`).join('')}
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+  },
+
+  toggleOverHistory(elementId) {
+    const elem = document.getElementById(elementId);
+    if (!elem) return;
+    const isHidden = (elem.style.display === 'none');
+    elem.style.display = isHidden ? 'block' : 'none';
+    const icon = document.getElementById(elementId + '-toggle-icon');
+    if (icon) {
+      icon.textContent = isHidden ? '▲ Hide' : '▼ View All';
+    }
+  },
+
+  // ==========================================
   // PUBLIC LIVE SCOREBOARD (FR-17, FR-18)
   // ==========================================
   setupLiveView() {
@@ -1751,6 +2034,7 @@ const App = {
     const nonStrikerP = pMap[liveMatch.nonStrikerId];
     const bowler = inStats.bowlers[liveMatch.bowlerId] || { oversFormatted: '0.0', wickets: 0, runsConceded: 0, economy: '0.00' };
     const bowlerP = pMap[liveMatch.bowlerId];
+    const isStaff = AppDB.isStaff();
 
     container.innerHTML = `
       <div class="live-hero">
@@ -1759,8 +2043,15 @@ const App = {
             <span class="status-dot"></span>
             <span>${is2nd ? '2nd Innings' : '1st Innings'} Live</span>
           </div>
-          <div class="overs-badge">
-            ${liveMatch.overs} Overs Match
+          <div style="display: flex; gap: 6px; align-items: center;">
+            <div class="overs-badge">
+              ${liveMatch.overs} Overs Match
+            </div>
+            ${isStaff ? `
+              <button class="btn-danger" style="padding: 2px 8px; min-height: 26px; font-size: 0.72rem;" onclick="App.confirmDeleteMatch('${liveMatch.id}')" title="Delete live match">
+                🗑️ Delete
+              </button>
+            ` : ''}
           </div>
         </div>
 
@@ -1833,8 +2124,22 @@ const App = {
           </div>
         </div>
 
+        <!-- Over-by-Over History (anyone can see history of every over + dropped catches) -->
+        <div class="over-history-section" style="margin-top: 14px; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 12px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; cursor: pointer;" onclick="App.toggleOverHistory('live-over-history')">
+            <span style="font-size: 0.88rem; font-weight: 800; color: var(--text-primary); display: flex; align-items: center; gap: 6px;">
+              <span>📊 Over-by-Over History</span>
+              <span class="overs-badge" style="font-size: 0.72rem; padding: 1px 6px;">${inStats.oversHistory.length} Overs</span>
+            </span>
+            <span id="live-over-history-toggle-icon" style="font-size: 0.75rem; color: var(--pitch-green); font-weight: 700;">▲ Hide</span>
+          </div>
+          <div id="live-over-history" style="display: block;">
+            ${this.renderOversHistoryHTML(inStats, pMap)}
+          </div>
+        </div>
+
         <!-- Web Share Button (WhatsApp share) -->
-        <div class="share-btn-wrap">
+        <div class="share-btn-wrap" style="margin-top: 14px;">
           <button class="btn-share" onclick="App.shareLiveMatch('${liveMatch.id}', '${this.escapeHtml(liveMatch.teamA)}', '${this.escapeHtml(liveMatch.teamB)}', '${inStats.totalRuns}/${inStats.wickets}', '${inStats.oversFormatted}')">
             <span>📲 Share Live Score on WhatsApp</span>
           </button>
@@ -1946,7 +2251,7 @@ const App = {
     const in2 = CricketEngine.replayInnings(in2Balls, match.teamBPlayerIds || [], match.teamAPlayerIds || [], match.overs);
 
     const dateStr = match.createdAt ? new Date(match.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
-    const isAdmin = AppDB.isAdmin();
+    const canDelete = AppDB.isStaff();
 
     return `
       <div class="card" style="margin-bottom: 14px;">
@@ -1995,7 +2300,7 @@ const App = {
             📋 Full Scorecard
           </button>
 
-          ${(isAdmin && showDelete) ? `
+          ${(canDelete && showDelete) ? `
             <button class="btn-danger" style="padding: 4px 10px; min-height: 34px; font-size: 0.75rem;" onclick="App.confirmDeleteMatch('${match.id}')">
               🗑️ Delete
             </button>
@@ -2006,11 +2311,18 @@ const App = {
   },
 
   async confirmDeleteMatch(matchId) {
-    if (!AppDB.isAdmin()) return;
+    if (!AppDB.isStaff()) {
+      this.showToast('Staff/Admin login required to delete matches', 'error');
+      return;
+    }
     if (confirm('Are you sure you want to delete this match record? This action cannot be undone.')) {
       await AppDB.deleteMatch(matchId);
       this.showToast('Match record deleted', 'info');
       this.renderHistoryView();
+      this.renderLiveView();
+      this.renderPointsTable();
+      this.renderScoringConsole();
+      this.renderPlayersTable();
     }
   },
 
@@ -2111,6 +2423,19 @@ const App = {
             </tbody>
           </table>
         </div>
+
+        <!-- Innings Over-by-Over History -->
+        <div style="margin-top: 12px; background: var(--bg-surface-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 10px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" onclick="App.toggleOverHistory('scorecard-overs-${this.escapeHtml(teamBattingName).replace(/[^a-zA-Z0-9]/g, '_')}')">
+            <span style="font-size: 0.82rem; font-weight: 700; color: var(--text-secondary);">
+              📊 Over-by-Over Log & Dropped Catches (${repStats.oversHistory.length} Overs)
+            </span>
+            <span id="scorecard-overs-${this.escapeHtml(teamBattingName).replace(/[^a-zA-Z0-9]/g, '_')}-toggle-icon" style="font-size: 0.75rem; color: var(--pitch-green); font-weight: 700;">▼ View All</span>
+          </div>
+          <div id="scorecard-overs-${this.escapeHtml(teamBattingName).replace(/[^a-zA-Z0-9]/g, '_')}" style="display: none; margin-top: 8px;">
+            ${this.renderOversHistoryHTML(repStats, pMap)}
+          </div>
+        </div>
       </div>
     `;
 
@@ -2181,8 +2506,12 @@ const App = {
       return;
     }
 
+    const isStaff = AppDB.isStaff();
+    document.querySelectorAll('.admin-only-col').forEach(el => {
+      el.style.display = isStaff ? 'table-cell' : 'none';
+    });
+
     tbody.innerHTML = filtered.map(s => {
-      const isStaff = AppDB.isStaff();
       return `
       <tr>
         <td>
@@ -2204,7 +2533,7 @@ const App = {
             <button class="btn-secondary" style="padding: 2px 8px; min-height: 28px; font-size: 0.72rem; border-color: var(--gold-amber); color: var(--gold-amber);" onclick="App.openEditPlayerModal('${s.id}')" title="Edit player details">
               ✏️ Edit
             </button>
-            ${isAdmin ? `
+            ${isStaff ? `
               <button class="btn-danger" style="padding: 2px 8px; min-height: 28px; font-size: 0.72rem;" onclick="App.confirmDeletePlayer('${s.id}', '${this.escapeHtml(s.name)}')" title="Delete player">
                 ✕
               </button>
@@ -2217,7 +2546,10 @@ const App = {
   },
 
   async confirmDeletePlayer(playerId, playerName) {
-    if (!AppDB.isAdmin()) return;
+    if (!AppDB.isStaff()) {
+      this.showToast('Staff/Admin login required to delete players', 'error');
+      return;
+    }
     if (confirm(`Are you sure you want to delete player ${playerName}? They will also be removed from teams.`)) {
       await AppDB.deletePlayer(playerId);
       this.showToast(`Player ${playerName} deleted`, 'info');

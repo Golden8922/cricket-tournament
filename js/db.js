@@ -653,9 +653,9 @@ const AppDB = {
     }
   },
 
-  // Delete match (Admin only, FR-22)
+  // Delete match (Admin & Staff, FR-22)
   async deleteMatch(matchId) {
-    if (!this.isAdmin()) throw new Error('Unauthorized: Admin access required');
+    if (!this.isStaff()) throw new Error('Unauthorized: Admin or Umpire staff access required');
 
     if (this.isFirebaseActive && this.firestore) {
       await this.firestore.collection('matches').doc(matchId).delete();
@@ -690,7 +690,7 @@ const AppDB = {
     }
 
     if (cleanPass !== 'sitare@2029') {
-      throw new Error('Incorrect password! Enter password "sitare@2029" to sign in.');
+      throw new Error('Incorrect password! Please check your credentials and try again.');
     }
 
     const cleanRole = (role === 'admin') ? 'admin' : 'umpire';

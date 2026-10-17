@@ -332,7 +332,10 @@
           <div class="scoring-selectors-grid">
             <!-- Striker -->
             <div class="selector-box active-strike" id="striker-selector-box">
-              <label for="select-striker">⭐ Striker (On Strike)</label>
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                <label for="select-striker" style="margin-bottom: 0;">⭐ Striker (On Strike)</label>
+                <button type="button" id="btn-declare-striker" class="btn-subtle-action" title="Declare / Retire striker or put any player on strike">Declare / Replace</button>
+              </div>
               <select id="select-striker" class="form-select" style="min-height: 42px; font-weight: 700;"></select>
               <div id="striker-live-stats" style="font-size: 0.75rem; color: var(--pitch-green); margin-top: 4px; font-family: var(--font-mono);">
                 0 (0) - 4s: 0, 6s: 0
@@ -341,7 +344,10 @@
 
             <!-- Non-Striker -->
             <div class="selector-box" id="non-striker-selector-box">
-              <label for="select-non-striker">Non-Striker</label>
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                <label for="select-non-striker" style="margin-bottom: 0;">Non-Striker</label>
+                <button type="button" id="btn-declare-non-striker" class="btn-subtle-action" title="Declare / Retire non-striker or put any player to crease">Declare / Replace</button>
+              </div>
               <select id="select-non-striker" class="form-select" style="min-height: 42px;"></select>
               <div id="non-striker-live-stats" style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 4px; font-family: var(--font-mono);">
                 0 (0) - 4s: 0, 6s: 0
@@ -364,12 +370,14 @@
             </button>
           </div>
 
-          <!-- Modifier Buttons (FR-11, FR-12: Wide, No ball, Bye, Leg bye tapped first) -->
+          <!-- Modifier Buttons (Wide (+1), No ball, Drop Catch, Bye, Leg bye, Extra Runs) -->
           <div class="modifier-buttons-row">
-            <button id="mod-wide" class="mod-btn" data-mod="wide">Wide</button>
-            <button id="mod-noball" class="mod-btn" data-mod="noball">No Ball</button>
-            <button id="mod-bye" class="mod-btn" data-mod="bye">Bye</button>
-            <button id="mod-legbye" class="mod-btn" data-mod="legbye">Leg Bye</button>
+            <button id="mod-wide" class="mod-btn mod-wide-btn" data-mod="wide" title="Instant Wide (+1 Run added immediately to score)">Wide (+1)</button>
+            <button id="mod-noball" class="mod-btn" data-mod="noball" title="No Ball delivery">No Ball</button>
+            <button id="mod-drop-catch" class="mod-btn mod-drop-catch" data-mod="dropcatch" title="Dropped Catch on this delivery">🖐️ Drop Catch</button>
+            <button id="mod-bye" class="mod-btn" data-mod="bye" title="Bye runs">Bye</button>
+            <button id="mod-legbye" class="mod-btn" data-mod="legbye" title="Leg Bye runs">Leg Bye</button>
+            <button id="btn-open-extra-runs" class="mod-btn mod-extra-runs" type="button" title="Add extra runs without increasing ball count">➕ Extra Runs</button>
           </div>
 
           <!-- HUGE SCORING KEYPAD (FR-11: 0, 1, 2, 3, 4, 6, OUT, Undo; >= 64px tall!) -->
@@ -394,13 +402,29 @@
             </div>
           </div>
 
+          <!-- Over-by-Over History for Umpire -->
+          <div class="card" style="padding: 10px 14px; margin-bottom: 10px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" onclick="App.toggleOverHistory('umpire-overs-history-log')">
+              <span style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">
+                📊 Over-by-Over Log & Dropped Catches
+              </span>
+              <span id="umpire-overs-history-log-toggle-icon" style="font-size: 0.75rem; color: var(--pitch-green); font-weight: 700;">▼ View</span>
+            </div>
+            <div id="umpire-overs-history-log" style="display: none; margin-top: 8px;">
+              <!-- Populated by JS -->
+            </div>
+          </div>
+
           <!-- Innings / Match Controls (FR-14) -->
           <div class="match-control-actions">
             <button id="btn-end-innings" class="btn-secondary" style="border-color: var(--gold-amber); color: var(--gold-amber);">
               🏁 End Innings
             </button>
-            <button id="btn-finish-match" class="btn-danger">
+            <button id="btn-finish-match" class="btn-primary" style="background: var(--pitch-green); color: #000; font-weight: 800;">
               🏆 Finish Match
+            </button>
+            <button id="btn-delete-live-match" class="btn-danger" style="background: rgba(239, 68, 68, 0.15); border: 1px solid var(--leather-red); color: var(--leather-red); font-size: 0.8rem; padding: 6px 10px;">
+              🗑️ Delete Match
             </button>
           </div>
         </div>
@@ -768,7 +792,7 @@
 
           <div class="form-group">
             <label class="form-label" for="login-password">Password <span class="req">*</span></label>
-            <input type="password" id="login-password" class="form-input" placeholder="Enter password (sitare@2029)" required autocomplete="current-password">
+            <input type="password" id="login-password" class="form-input" placeholder="Enter password" required autocomplete="current-password">
           </div>
 
           <button type="submit" class="btn-primary btn-full" style="margin-top: 8px;">
@@ -926,6 +950,67 @@
         <div style="display: flex; gap: 8px; margin-top: 12px;">
           <button id="btn-save-firebase-config" class="btn-primary" style="flex: 1;">Save & Connect</button>
           <button id="btn-clear-firebase-config" class="btn-danger">Clear</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Add Extra Runs (Without Increasing Ball Count) -->
+    <div id="modal-extra-runs" class="modal-overlay">
+      <div class="modal-dialog" style="max-width: 420px;">
+        <div class="modal-header">
+          <h2 class="modal-title">➕ Add Extra / Penalty Runs</h2>
+          <button class="modal-close-btn" data-close-modal="modal-extra-runs">✕</button>
+        </div>
+        <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 14px;">
+          Add extra runs to the team score without increasing the legal ball count (e.g. overthrows, boundary penalties, penalty extras):
+        </p>
+
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px;">
+          <button type="button" class="btn-secondary" onclick="App.recordExtraRuns(1)" style="font-size: 1.1rem; font-weight: 800; font-family: var(--font-mono); min-height: 52px;">+1 Run</button>
+          <button type="button" class="btn-secondary" onclick="App.recordExtraRuns(2)" style="font-size: 1.1rem; font-weight: 800; font-family: var(--font-mono); min-height: 52px;">+2 Runs</button>
+          <button type="button" class="btn-secondary" onclick="App.recordExtraRuns(3)" style="font-size: 1.1rem; font-weight: 800; font-family: var(--font-mono); min-height: 52px;">+3 Runs</button>
+          <button type="button" class="btn-secondary" onclick="App.recordExtraRuns(4)" style="font-size: 1.1rem; font-weight: 800; font-family: var(--font-mono); min-height: 52px; color: var(--electric-blue);">+4 Runs</button>
+          <button type="button" class="btn-secondary" onclick="App.recordExtraRuns(5)" style="font-size: 1.1rem; font-weight: 800; font-family: var(--font-mono); min-height: 52px; color: var(--gold-amber);">+5 Runs</button>
+          <button type="button" class="btn-secondary" onclick="App.recordExtraRuns(6)" style="font-size: 1.1rem; font-weight: 800; font-family: var(--font-mono); min-height: 52px; color: var(--pitch-green);">+6 Runs</button>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 12px;">
+          <label class="form-label" for="custom-extra-runs-input">Custom Extra Runs Amount:</label>
+          <div style="display: flex; gap: 8px;">
+            <input type="number" id="custom-extra-runs-input" class="form-input" min="1" max="50" placeholder="e.g. 5" style="font-family: var(--font-mono);">
+            <button type="button" id="btn-submit-custom-extra" class="btn-primary" style="white-space: nowrap;">Add Runs</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Declare Batsman / Replace with ANY player -->
+    <div id="modal-declare-batsman" class="modal-overlay">
+      <div class="modal-dialog" style="max-width: 460px;">
+        <div class="modal-header">
+          <h2 class="modal-title" id="declare-modal-title">⭐ Declare / Replace Batsman</h2>
+          <button class="modal-close-btn" data-close-modal="modal-declare-batsman">✕</button>
+        </div>
+
+        <div id="declare-current-info" style="background: var(--bg-surface); padding: 10px 14px; border-radius: var(--radius-md); border: 1px solid var(--border-subtle); margin-bottom: 14px; font-size: 0.88rem;">
+          <!-- Populated dynamically -->
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="select-replacement-player">Select Player to Come to Crease:</label>
+          <select id="select-replacement-player" class="form-select" style="min-height: 42px; font-weight: 700;"></select>
+          <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">
+            You can select ANY squad player (including substitutes) to come in to bat.
+          </p>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 14px;">
+          <button type="button" id="btn-confirm-declare-retire" class="btn-primary" style="background: linear-gradient(135deg, var(--gold-amber), #D97706); color: #000;">
+            🚩 Declare / Retire Current & Put Selected on Strike
+          </button>
+          <button type="button" id="btn-confirm-simple-swap" class="btn-secondary">
+            🔄 Replace / Set Selected on Strike (Without Declaring)
+          </button>
         </div>
       </div>
     </div>
