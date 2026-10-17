@@ -1,5 +1,11 @@
 # College Cricket Tournament App 🏏
 
+[![Live on Vercel](https://img.shields.io/badge/Vercel-Live_App-black?logo=vercel)](https://sitarekcirc.vercel.app)
+[![GitHub Repository](https://img.shields.io/badge/GitHub-Golden8922%2Fcricket--tournament-blue?logo=github)](https://github.com/Golden8922/cricket-tournament)
+
+- 🌐 **Live Website**: [https://sitarekcirc.vercel.app](https://sitarekcirc.vercel.app)
+- 📦 **GitHub Repository**: [https://github.com/Golden8922/cricket-tournament](https://github.com/Golden8922/cricket-tournament)
+
 A mobile-first Progressive Web App (PWA) designed to manage an entire college cricket tournament with live scoring, squads, and points table:
 - **4 Official Tournament Squads** (Sitare Strikers, Falcons, Dominators, Power Smashers) preloaded with 55 college players formatted by year (e.g. `Ritik 3`, `Golden 2`, `Prem 3`, `Aryan 3`)
 - **Direct Team & Player Management**: Umpires and Admins can add, edit, reassign, or rename any team or player anytime
