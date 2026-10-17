@@ -1,5 +1,5 @@
 // Unified Database & Authentication Layer
-// Supports Firebase Firestore + Firebase Auth with zero-config LocalStorage/BroadcastChannel fallback
+// Supports Vercel Cloud Blob Real-Time Sync + Firebase Firestore + LocalStorage fallback
 // Implements FR-1, FR-2, FR-3, FR-18, FR-22, FR-23, FR-24, FR-25
 
 const AppDB = {
@@ -9,13 +9,24 @@ const AppDB = {
     TEAMS: 'cct_teams',
     MATCHES: 'cct_matches',
     AUTH: 'cct_auth_user',
-    FIREBASE_CONFIG: 'cct_firebase_config'
+    FIREBASE_CONFIG: 'cct_firebase_config',
+    LAST_SYNC: 'cct_last_synced_at'
+  },
+
+  CLOUD: {
+    API_URL: '/api/sync',
+    CDN_URL: 'https://v0grmksww68yigcw.public.blob.vercel-storage.com/tournament_state.json',
+    POLL_INTERVAL_MS: 2000
   },
 
   broadcastChannel: null,
   isFirebaseActive: false,
   firestore: null,
   firebaseAuth: null,
+  _cloudPushPromise: null,
+  _cloudPushQueued: false,
+  _isPulling: false,
+  _syncInterval: null,
   
   // Real-time listener callbacks
   listeners: {
@@ -45,7 +56,10 @@ const AppDB = {
     }
 
     // Monitor browser online/offline events
-    window.addEventListener('online', () => this.setConnectionStatus('online'));
+    window.addEventListener('online', () => {
+      this.setConnectionStatus('online');
+      this.pullFromCloud();
+    });
     window.addEventListener('offline', () => this.setConnectionStatus('offline'));
 
     // Check saved session
@@ -67,14 +81,17 @@ const AppDB = {
           await this.initFirebase(config);
         }
       } catch (err) {
-        console.warn('Failed to initialize custom Firebase config, using local mode:', err);
+        console.warn('Failed to initialize custom Firebase config, using cloud sync mode:', err);
       }
     }
 
-    // If local mode, check if seed data needed
+    // Ensure seed data exists locally
     if (!this.isFirebaseActive) {
       this.ensureSeedData();
     }
+
+    // Start real-time cloud sync across all devices
+    this.startRealtimeSync();
 
     this.notifyStatusListeners();
     this.notifyAuthListeners();
@@ -104,6 +121,155 @@ const AppDB = {
       this.notifyListeners('teams');
       this.notifyListeners('matches');
       this.broadcast('data_reset');
+      this.pushToCloud();
+    }
+  },
+
+  // Real-time Cloud Sync Engine (multi-device live scores)
+  startRealtimeSync() {
+    if (this._syncInterval) clearInterval(this._syncInterval);
+
+    // Initial pull immediately
+    this.pullFromCloud();
+
+    // Poll every 2 seconds for live real-time score updates across all devices
+    this._syncInterval = setInterval(() => {
+      this.pullFromCloud();
+    }, this.CLOUD.POLL_INTERVAL_MS);
+  },
+
+  async pushToCloud() {
+    if (this._cloudPushPromise) {
+      this._cloudPushQueued = true;
+      return;
+    }
+
+    const payload = {
+      players: this.getLocalPlayers(),
+      teams: this.getLocalTeams(),
+      matches: this.getLocalMatches(),
+      updatedAt: Date.now()
+    };
+
+    localStorage.setItem(this.STORAGE_KEYS.LAST_SYNC, String(payload.updatedAt));
+
+    this._cloudPushPromise = (async () => {
+      try {
+        const res = await fetch(this.CLOUD.API_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (res.ok) {
+          this.setConnectionStatus('online');
+        }
+      } catch (err) {
+        console.warn('Cloud sync push warning:', err.message);
+      } finally {
+        this._cloudPushPromise = null;
+        if (this._cloudPushQueued) {
+          this._cloudPushQueued = false;
+          this.pushToCloud();
+        }
+      }
+    })();
+  },
+
+  async pullFromCloud() {
+    if (this._isPulling || this._cloudPushPromise) return;
+    this._isPulling = true;
+
+    try {
+      // First try direct CDN with cache-busting timestamp
+      let remoteData = null;
+      try {
+        const cdnRes = await fetch(`${this.CLOUD.CDN_URL}?_t=${Date.now()}`, { cache: 'no-store' });
+        if (cdnRes.ok) {
+          remoteData = await cdnRes.json();
+        }
+      } catch (e) {}
+
+      if (!remoteData || !remoteData.updatedAt) {
+        try {
+          const apiRes = await fetch(`${this.CLOUD.API_URL}?_t=${Date.now()}`, { cache: 'no-store' });
+          if (apiRes.ok) {
+            const json = await apiRes.json();
+            remoteData = json.data;
+          }
+        } catch (e) {}
+      }
+
+      if (!remoteData || !remoteData.updatedAt) {
+        const localMatches = this.getLocalMatches();
+        const localPlayers = this.getLocalPlayers();
+        if (localPlayers.length > 0 || localMatches.length > 0) {
+          await this.pushToCloud();
+        }
+        return;
+      }
+
+      const localSyncedAt = Number(localStorage.getItem(this.STORAGE_KEYS.LAST_SYNC) || 0);
+
+      // Scorer protection: if local has an active match or finished match not in remote yet, push local!
+      const localMatches = this.getLocalMatches();
+      const hasLocalMatches = localMatches.length > 0;
+      const remoteMatches = remoteData.matches || [];
+      const hasRemoteMatches = remoteMatches.length > 0;
+
+      if (hasLocalMatches && !hasRemoteMatches && localSyncedAt === 0) {
+        await this.pushToCloud();
+        return;
+      }
+
+      // If remote has newer data than local:
+      if (remoteData.updatedAt > localSyncedAt) {
+        localStorage.setItem(this.STORAGE_KEYS.LAST_SYNC, String(remoteData.updatedAt));
+
+        let changedPlayers = false;
+        let changedTeams = false;
+        let changedMatches = false;
+
+        if (Array.isArray(remoteData.players) && remoteData.players.length > 0) {
+          const cur = localStorage.getItem(this.STORAGE_KEYS.PLAYERS);
+          const next = JSON.stringify(remoteData.players);
+          if (cur !== next) {
+            localStorage.setItem(this.STORAGE_KEYS.PLAYERS, next);
+            changedPlayers = true;
+          }
+        }
+
+        if (Array.isArray(remoteData.teams) && remoteData.teams.length > 0) {
+          const cur = localStorage.getItem(this.STORAGE_KEYS.TEAMS);
+          const next = JSON.stringify(remoteData.teams);
+          if (cur !== next) {
+            localStorage.setItem(this.STORAGE_KEYS.TEAMS, next);
+            changedTeams = true;
+          }
+        }
+
+        if (Array.isArray(remoteData.matches)) {
+          const cur = localStorage.getItem(this.STORAGE_KEYS.MATCHES);
+          const next = JSON.stringify(remoteData.matches);
+          if (cur !== next) {
+            localStorage.setItem(this.STORAGE_KEYS.MATCHES, next);
+            changedMatches = true;
+          }
+        }
+
+        if (changedPlayers) this.notifyListeners('players');
+        if (changedTeams) this.notifyListeners('teams');
+        if (changedMatches) this.notifyListeners('matches');
+
+        if (changedPlayers || changedTeams || changedMatches) {
+          this.broadcast('cloud_sync');
+        }
+      }
+
+      this.setConnectionStatus('online');
+    } catch (err) {
+      console.warn('Cloud pull error:', err.message);
+    } finally {
+      this._isPulling = false;
     }
   },
 
@@ -112,7 +278,7 @@ const AppDB = {
     if (!data) return;
     if (['players', 'teams', 'matches'].includes(data.type)) {
       this.notifyListeners(data.type);
-    } else if (data.type === 'data_reset') {
+    } else if (data.type === 'data_reset' || data.type === 'cloud_sync') {
       this.notifyListeners('players');
       this.notifyListeners('teams');
       this.notifyListeners('matches');
@@ -251,6 +417,7 @@ const AppDB = {
     this.notifyListeners('teams');
     this.broadcast('players');
     this.broadcast('teams');
+    this.pushToCloud();
 
     return newPlayer;
   },
@@ -278,6 +445,7 @@ const AppDB = {
       this.notifyListeners('teams');
       this.broadcast('players');
       this.broadcast('teams');
+      this.pushToCloud();
     }
   },
 
@@ -316,6 +484,7 @@ const AppDB = {
 
     this.notifyListeners('players');
     this.broadcast('players');
+    this.pushToCloud();
     return players[idx];
   },
 
@@ -406,6 +575,7 @@ const AppDB = {
       localStorage.setItem(this.STORAGE_KEYS.TEAMS, JSON.stringify(teams));
       this.notifyListeners('teams');
       this.broadcast('teams');
+      this.pushToCloud();
     }
   },
 
@@ -456,6 +626,7 @@ const AppDB = {
       localStorage.setItem(this.STORAGE_KEYS.MATCHES, JSON.stringify(matches));
       this.notifyListeners('matches');
       this.broadcast('matches');
+      this.pushToCloud();
     }
 
     return newMatch;
@@ -477,6 +648,7 @@ const AppDB = {
         localStorage.setItem(this.STORAGE_KEYS.MATCHES, JSON.stringify(matches));
         this.notifyListeners('matches');
         this.broadcast('matches');
+        this.pushToCloud();
       }
     }
   },
@@ -492,6 +664,7 @@ const AppDB = {
       localStorage.setItem(this.STORAGE_KEYS.MATCHES, JSON.stringify(matches));
       this.notifyListeners('matches');
       this.broadcast('matches');
+      this.pushToCloud();
     }
   },
 
