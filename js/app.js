@@ -3,6 +3,8 @@
 
 const App = {
   activeView: 'view-live',
+  QUALIFY_SPOTS: 2, // top N teams get a "Q" mark in the points table
+  _refreshing: false,
   currentModifier: null, // null | 'wide' | 'noball' | 'bye' | 'legbye'
   activeScoringMatch: null,
   wakeLock: null,
@@ -10,6 +12,13 @@ const App = {
   audioCtx: null,
 
   async init() {
+    // First-ever visit on this device: show a skeleton instead of seed data until the first sync ends
+    if (!localStorage.getItem('cct_last_synced_at')) {
+      const appEl = document.getElementById('app');
+      if (appEl) appEl.classList.add('is-first-load');
+      setTimeout(() => this.finishFirstLoad(), 6000);
+    }
+
     // 1. Initialize Database
     await AppDB.init();
 
@@ -24,11 +33,15 @@ const App = {
     this.setupScoringConsole();
     this.setupHistoryAndPlayers();
     this.setupLiveView();
+    this.setupSyncBar();
+    this.setupPullToRefresh();
+    this.setupFixtures();
 
     // 3. Subscribe to DB updates
     AppDB.subscribe('players', () => this.onPlayersDataChanged());
     AppDB.subscribe('teams', () => this.onTeamsDataChanged());
     AppDB.subscribe('matches', () => this.onMatchesDataChanged());
+    AppDB.subscribe('fixtures', () => this.onFixturesDataChanged());
     AppDB.onAuthChange((user) => this.onAuthStateChanged(user));
     AppDB.onStatusChange((status) => this.onConnectionStatusChanged(status));
 
@@ -43,6 +56,516 @@ const App = {
     } else {
       this.navigateTo('view-live');
     }
+  },
+
+  // ==========================================
+  // SYNC BAR, REFRESH & PULL-TO-REFRESH
+  // ==========================================
+  finishFirstLoad() {
+    const appEl = document.getElementById('app');
+    if (appEl) appEl.classList.remove('is-first-load');
+  },
+
+  formatAgo(ms) {
+    const secs = Math.max(0, Math.floor(ms / 1000));
+    if (secs < 60) return `${secs} s`;
+    const mins = Math.floor(secs / 60);
+    if (mins < 60) return `${mins} min`;
+    return `${Math.floor(mins / 60)} h`;
+  },
+
+  setupSyncBar() {
+    const btn = document.getElementById('sync-bar-refresh');
+    if (btn) btn.addEventListener('click', () => this.refreshNow(true));
+    this.updateSyncBar();
+    setInterval(() => this.updateSyncBar(), 1000);
+  },
+
+  updateSyncBar() {
+    const bar = document.getElementById('sync-bar');
+    const text = document.getElementById('sync-bar-text');
+    if (!bar || !text) return;
+
+    const now = Date.now();
+    const last = AppDB.lastSyncOkAt;
+    let cls = 'busy';
+    let msg = 'Syncing latest data…';
+
+    if (this._refreshing) {
+      msg = 'Refreshing…';
+    } else if (AppDB.connectionStatus === 'offline') {
+      cls = 'offline';
+      msg = last ? `Offline • last updated ${this.formatAgo(now - last)} ago` : 'Offline • showing saved data';
+    } else if (last) {
+      const age = now - last;
+      if (AppDB.connectionStatus === 'reconnecting' || age > 30000) {
+        cls = 'stale';
+        msg = `Reconnecting… last updated ${this.formatAgo(age)} ago`;
+      } else {
+        cls = 'ok';
+        msg = age < 4000 ? 'Live • updated just now' : `Live • updated ${this.formatAgo(age)} ago`;
+      }
+    }
+    if (AppDB.isStaff() && AppDB.hasUnsentChanges()) msg += ' • saving your changes…';
+
+    bar.className = `sync-bar ${cls}`;
+    text.textContent = msg;
+  },
+
+  async refreshNow(manual = false) {
+    if (this._refreshing) return;
+    this._refreshing = true;
+    this.updateSyncBar();
+    const before = AppDB.lastSyncOkAt;
+    try {
+      await AppDB.refreshNow();
+      this.renderAll();
+      if (manual) {
+        if (AppDB.lastSyncOkAt > before) this.showToast('Latest data loaded', 'success');
+        else this.showToast("Couldn't reach the server. Showing saved data.", 'info');
+      }
+    } catch (err) {
+      if (manual) this.showToast("Couldn't refresh right now.", 'error');
+    } finally {
+      this._refreshing = false;
+      this.updateSyncBar();
+    }
+  },
+
+  // Pull down at the top of a page to refresh (not on the scoring screen, not with a dialog open)
+  setupPullToRefresh() {
+    const indicator = document.getElementById('ptr-indicator');
+    const label = document.getElementById('ptr-indicator-text');
+    if (!indicator || !label) return;
+
+    const THRESHOLD = 80;
+    let startY = 0;
+    let startX = 0;
+    let pulling = false;
+    let dist = 0;
+
+    const reset = () => {
+      pulling = false;
+      dist = 0;
+      indicator.classList.remove('visible');
+    };
+
+    document.addEventListener('touchstart', (e) => {
+      const blocked = window.scrollY > 0 || this.activeView === 'view-scoring' ||
+        document.querySelector('.modal-overlay.active') || e.touches.length !== 1;
+      if (blocked || this._refreshing) { pulling = false; return; }
+      startY = e.touches[0].clientY;
+      startX = e.touches[0].clientX;
+      pulling = true;
+      dist = 0;
+    }, { passive: true });
+
+    document.addEventListener('touchmove', (e) => {
+      if (!pulling) return;
+      const dy = e.touches[0].clientY - startY;
+      const dx = Math.abs(e.touches[0].clientX - startX);
+      if (dy <= 10 || dx > dy) { indicator.classList.remove('visible'); dist = 0; return; }
+      dist = dy;
+      label.textContent = dist > THRESHOLD ? '↑ Release to refresh' : '↓ Pull to refresh';
+      indicator.style.transform = `translate(-50%, ${Math.min(dist, 120) - 50}px)`;
+      indicator.classList.add('visible');
+    }, { passive: true });
+
+    document.addEventListener('touchend', async () => {
+      const shouldRefresh = pulling && dist > THRESHOLD;
+      if (!shouldRefresh) { reset(); indicator.style.transform = ''; return; }
+      pulling = false;
+      label.textContent = 'Refreshing…';
+      indicator.classList.add('refreshing');
+      await this.refreshNow(true);
+      indicator.classList.remove('refreshing', 'visible');
+      indicator.style.transform = '';
+      dist = 0;
+    }, { passive: true });
+
+    document.addEventListener('touchcancel', () => { reset(); indicator.style.transform = ''; }, { passive: true });
+  },
+
+  // ==========================================
+  // POINTS TABLE LEGEND
+  // ==========================================
+  updateTableLegend() {
+    const el = document.getElementById('table-legend');
+    if (!el) return;
+    el.innerHTML = `<span class="q-badge" style="margin-left:0">Q</span> in a qualifying position (top ${this.QUALIFY_SPOTS}). Teams level on points are ranked by net run rate, then wins, then head-to-head.`;
+  },
+
+  // ==========================================
+  // FIXTURES / SCHEDULE
+  // ==========================================
+  // Pair every fixture with the result (or live match) between the same two teams
+  getFixtureViews() {
+    const fixtures = AppDB.getLocalFixtures();
+    const matches = AppDB.getLocalMatches();
+    const samePair = (m, f) =>
+      (m.teamA === f.teamA && m.teamB === f.teamB) || (m.teamA === f.teamB && m.teamB === f.teamA);
+    const done = matches.filter(m => m.status === 'done').sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    const live = matches.find(m => m.status === 'live');
+    const claimed = new Set();
+    let liveClaimed = false;
+
+    return fixtures.map(f => {
+      const result = done.find(m => !claimed.has(m.id) && samePair(m, f));
+      if (result) {
+        claimed.add(result.id);
+        return { fixture: f, status: 'done', match: result };
+      }
+      if (live && !liveClaimed && samePair(live, f)) {
+        liveClaimed = true;
+        return { fixture: f, status: 'live', match: live };
+      }
+      return { fixture: f, status: 'upcoming', match: null };
+    });
+  },
+
+  renderNextFixtureHtml() {
+    const next = this.getFixtureViews().find(v => v.status === 'upcoming');
+    if (!next) return '';
+    const f = next.fixture;
+    const when = new Date(f.scheduledAt).toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    return `<p style="margin-bottom: 16px; font-size: 0.9rem;">📅 Next match: <strong>${this.escapeHtml(f.teamA)} vs ${this.escapeHtml(f.teamB)}</strong><br><span style="color: var(--text-muted);">${this.escapeHtml(when)}</span></p>`;
+  },
+
+  onFixturesDataChanged() {
+    this.renderFixturesView();
+    this.renderLiveView();
+  },
+
+  renderFixturesView() {
+    const container = document.getElementById('fixtures-list');
+    if (!container) return;
+
+    const views = this.getFixtureViews();
+    const staff = AppDB.isStaff();
+
+    if (views.length === 0) {
+      container.innerHTML = `
+        <div class="empty-state card">
+          <div class="empty-icon">📅</div>
+          <div class="empty-title">No fixtures yet</div>
+          <p>${staff ? 'Tap "Add Fixture" to schedule the first match.' : 'The tournament schedule will appear here.'}</p>
+        </div>`;
+      return;
+    }
+
+    const nextIdx = views.findIndex(v => v.status === 'upcoming');
+    let lastDay = '';
+    container.innerHTML = views.map((v, idx) => {
+      const f = v.fixture;
+      const d = new Date(f.scheduledAt);
+      const day = d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'short' });
+      const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+      const header = day !== lastDay ? `<div class="fixture-day">${this.escapeHtml(day)}</div>` : '';
+      lastDay = day;
+
+      let chip = '<span class="fixture-chip">Upcoming</span>';
+      let cardClass = 'fixture-card';
+      let resultHtml = '';
+      if (v.status === 'live') {
+        chip = '<span class="fixture-chip live">● LIVE</span>';
+        cardClass += ' is-live';
+      } else if (v.status === 'done') {
+        chip = '<span class="fixture-chip done">Finished</span>';
+        const in1 = CricketEngine.getInningsStats(v.match, 1);
+        const in2 = CricketEngine.getInningsStats(v.match, 2);
+        const aBatsFirst = v.match.teamA === f.teamA;
+        const scoreA = aBatsFirst ? in1 : in2;
+        const scoreB = aBatsFirst ? in2 : in1;
+        resultHtml = `<div class="fixture-result">🏆 ${this.escapeHtml(v.match.result || 'Match completed')}<br><span style="font-weight: 600; color: var(--text-secondary); font-size: 0.78rem;">${this.escapeHtml(f.teamA)} ${scoreA.totalRuns}/${scoreA.wickets} • ${this.escapeHtml(f.teamB)} ${scoreB.totalRuns}/${scoreB.wickets}</span></div>`;
+      } else if (idx === nextIdx) {
+        chip = '<span class="fixture-chip next">Next</span>';
+        cardClass += ' is-next';
+      }
+
+      const actions = staff ? `
+        <div class="fixture-actions">
+          <button class="btn-secondary" style="padding: 4px 10px; min-height: 32px; font-size: 0.75rem;" data-action="editFixture" data-id="${this.escapeHtml(f.id)}">✏️ Edit</button>
+          <button class="btn-danger" style="padding: 4px 10px; min-height: 32px; font-size: 0.75rem;" data-action="deleteFixture" data-id="${this.escapeHtml(f.id)}">🗑️ Delete</button>
+        </div>` : '';
+
+      return `${header}
+        <div class="${cardClass}">
+          <div class="fixture-top"><span>🕒 ${this.escapeHtml(time)}${f.note ? ' • ' + this.escapeHtml(f.note) : ''}</span>${chip}</div>
+          <div class="fixture-teams"><span>${this.escapeHtml(f.teamA)}</span><span class="vs-badge">VS</span><span class="fixture-side-b">${this.escapeHtml(f.teamB)}</span></div>
+          ${resultHtml}${actions}
+        </div>`;
+    }).join('');
+  },
+
+  setupFixtures() {
+    const btn = document.getElementById('btn-open-add-fixture');
+    if (btn) btn.addEventListener('click', () => this.openFixtureModal());
+
+    const form = document.getElementById('form-fixture');
+    if (form) {
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const val = (id) => document.getElementById(id)?.value;
+        const when = val('fixture-datetime');
+        const data = {
+          teamA: val('fixture-team-a'),
+          teamB: val('fixture-team-b'),
+          scheduledAt: when ? new Date(when).getTime() : NaN,
+          note: val('fixture-note')
+        };
+        const fixtureId = val('fixture-id');
+        try {
+          if (fixtureId) await AppDB.updateFixture(fixtureId, data);
+          else await AppDB.addFixture(data);
+          this.closeModal('modal-fixture');
+          this.showToast(fixtureId ? 'Fixture updated' : 'Fixture added', 'success');
+          this.renderFixturesView();
+        } catch (err) {
+          this.showToast(err.message, 'error');
+        }
+      });
+    }
+  },
+
+  async openFixtureModal(fixtureId = null) {
+    if (!AppDB.isStaff()) {
+      this.showToast('Staff/Admin login required to edit fixtures', 'error');
+      return;
+    }
+    const teams = await AppDB.getTeams();
+    if (teams.length < 2) {
+      this.showToast('Create at least two teams first', 'error');
+      return;
+    }
+    const existing = fixtureId ? AppDB.getLocalFixtures().find(f => f.id === fixtureId) : null;
+
+    const options = (selected) => teams.map(t =>
+      `<option value="${this.escapeHtml(t.name)}" ${t.name === selected ? 'selected' : ''}>${this.escapeHtml(t.name)}</option>`).join('');
+    document.getElementById('fixture-team-a').innerHTML = options(existing ? existing.teamA : teams[0].name);
+    document.getElementById('fixture-team-b').innerHTML = options(existing ? existing.teamB : teams[1].name);
+    document.getElementById('fixture-id').value = existing ? existing.id : '';
+    document.getElementById('fixture-datetime').value = this.toLocalInputValue(existing ? existing.scheduledAt : Date.now());
+    document.getElementById('fixture-note').value = existing ? (existing.note || '') : '';
+    document.getElementById('fixture-modal-title').textContent = existing ? '✏️ Edit Fixture' : '➕ Add Fixture';
+    this.openModal('modal-fixture');
+  },
+
+  async confirmDeleteFixture(fixtureId) {
+    if (!AppDB.isStaff()) {
+      this.showToast('Staff/Admin login required to delete fixtures', 'error');
+      return;
+    }
+    if (!confirm('Delete this fixture? (Match results are not affected.)')) return;
+    try {
+      await AppDB.deleteFixture(fixtureId);
+      this.showToast('Fixture deleted', 'info');
+      this.renderFixturesView();
+    } catch (err) {
+      this.showToast(err.message, 'error');
+    }
+  },
+
+  // ==========================================
+  // BOWLER RULES: overs limit + next bowler prompt
+  // ==========================================
+  getCurrentInningsStats(match) {
+    const is2nd = match.currentInnings === 2;
+    const battingIds = is2nd ? (match.teamBPlayerIds || []) : (match.teamAPlayerIds || []);
+    const bowlingIds = is2nd ? (match.teamAPlayerIds || []) : (match.teamBPlayerIds || []);
+    const balls = (match.balls || []).filter(b => b.innings === match.currentInnings);
+    return CricketEngine.replayInnings(balls, battingIds, bowlingIds, match.overs);
+  },
+
+  // Standard rule: no bowler bowls more than one fifth of the overs (8 overs -> 2 each).
+  // Raised automatically when the bowling squad is too small to cover all the overs.
+  getBowlerOverLimit(match) {
+    const bowlingIds = match.currentInnings === 2 ? (match.teamAPlayerIds || []) : (match.teamBPlayerIds || []);
+    const squad = Math.max(1, bowlingIds.length);
+    return Math.max(Math.ceil(match.overs / 5), Math.ceil(match.overs / squad));
+  },
+
+  ensureBowlerAllowed(match) {
+    const limit = this.getBowlerOverLimit(match);
+    const bowler = this.getCurrentInningsStats(match).bowlers[match.bowlerId];
+    if (bowler && bowler.legalBalls >= limit * 6) {
+      this.showToast(`This bowler has bowled the maximum ${limit} overs. Choose another bowler to continue.`, 'error');
+      this.openNextBowlerPrompt();
+      return false;
+    }
+    return true;
+  },
+
+  // After the 6th legal ball of an over (and the innings is not over): choose the next bowler
+  maybePromptNextBowler(match) {
+    const balls = (match.balls || []).filter(b => b.innings === match.currentInnings);
+    const legal = balls.filter(b => b.isLegal).length;
+    const last = balls[balls.length - 1];
+    if (!last || !last.isLegal || legal === 0 || legal % 6 !== 0) return;
+
+    const stats = this.getCurrentInningsStats(match);
+    if (stats.isInningsOver) return;
+    if (match.currentInnings === 2) {
+      const first = CricketEngine.getInningsStats(match, 1);
+      if (stats.totalRuns > first.totalRuns) return; // target chased, match is over
+    }
+    this.openNextBowlerPrompt();
+  },
+
+  openNextBowlerPrompt() {
+    const match = this.activeScoringMatch;
+    if (!match) return;
+    const bowlingIds = match.currentInnings === 2 ? (match.teamAPlayerIds || []) : (match.teamBPlayerIds || []);
+    const stats = this.getCurrentInningsStats(match);
+    const limit = this.getBowlerOverLimit(match);
+    const pMap = {};
+    AppDB.getLocalPlayers().forEach(p => { pMap[p.id] = p; });
+
+    const balls = (id) => (stats.bowlers[id] && stats.bowlers[id].legalBalls) || 0;
+    const available = bowlingIds.filter(id => balls(id) < limit * 6);
+    // The bowler who just finished an over cannot bowl the next one, unless nobody else is left
+    let choices = available.filter(id => id !== match.bowlerId);
+    if (choices.length === 0) choices = available;
+    if (choices.length === 0) return;
+
+    const select = document.getElementById('select-next-bowler');
+    const info = document.getElementById('next-bowler-info');
+    if (!select) return;
+    select.innerHTML = choices.map(id => {
+      const name = pMap[id] ? pMap[id].name : id;
+      return `<option value="${this.escapeHtml(id)}">${this.escapeHtml(name)} (${CricketEngine.formatOvers(balls(id))} ov bowled)</option>`;
+    }).join('');
+    const prev = pMap[match.bowlerId];
+    if (info) {
+      info.textContent = `${prev ? prev.name : 'The last bowler'} finished the over. Maximum ${limit} overs per bowler.`;
+    }
+    this._nextBowlerMatchId = match.id;
+    this.openModal('modal-next-bowler');
+  },
+
+  async confirmNextBowler() {
+    const select = document.getElementById('select-next-bowler');
+    const matchId = this._nextBowlerMatchId;
+    if (!select || !select.value || !matchId) return;
+    try {
+      await AppDB.updateMatch(matchId, { bowlerId: select.value });
+      if (this.activeScoringMatch && this.activeScoringMatch.id === matchId) {
+        this.activeScoringMatch.bowlerId = select.value;
+      }
+      this.closeModal('modal-next-bowler');
+      this.renderScoringConsole();
+    } catch (err) {
+      this.showToast(err.message, 'error');
+    }
+  },
+
+  // ==========================================
+  // SHARE A RESULT (image card + text for WhatsApp)
+  // ==========================================
+  async shareResultCard(matchId) {
+    const match = await AppDB.getMatch(matchId);
+    if (!match) return;
+    const in1 = CricketEngine.getInningsStats(match, 1);
+    const in2 = CricketEngine.getInningsStats(match, 2);
+    const when = match.createdAt
+      ? new Date(match.createdAt).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+      : '';
+    const result = match.result || 'Match completed';
+    const text = `🏏 COLLEGE CRICKET TOURNAMENT\n\n${match.teamA}: ${in1.totalRuns}/${in1.wickets} (${in1.oversFormatted} ov)\n${match.teamB}: ${in2.totalRuns}/${in2.wickets} (${in2.oversFormatted} ov)\n\n🏆 ${result}\n\n${window.location.origin}${window.location.pathname}#history`;
+
+    let file = null;
+    try {
+      const blob = await this.renderResultCardBlob(match, in1, in2, when, result);
+      if (blob) file = new File([blob], 'match-result.png', { type: 'image/png' });
+    } catch (e) { /* fall back to text only */ }
+
+    try {
+      if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], text, title: 'Match result' });
+        return;
+      }
+      if (navigator.share) {
+        await navigator.share({ text, title: 'Match result' });
+        return;
+      }
+    } catch (err) {
+      if (err && err.name === 'AbortError') return; // user closed the share sheet
+    }
+    window.open('https://wa.me/?text=' + encodeURIComponent(text), '_blank', 'noopener');
+  },
+
+  renderResultCardBlob(match, in1, in2, when, result) {
+    return new Promise((resolve) => {
+      const W = 1080, H = 1080;
+      const canvas = document.createElement('canvas');
+      canvas.width = W;
+      canvas.height = H;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return resolve(null);
+
+      const grad = ctx.createLinearGradient(0, 0, 0, H);
+      grad.addColorStop(0, '#0B132B');
+      grad.addColorStop(1, '#142247');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, W, H);
+
+      const font = (size, weight = 700) => `${weight} ${size}px system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif`;
+      const fit = (text, maxWidth, size, weight) => {
+        let s = size;
+        ctx.font = font(s, weight);
+        while (ctx.measureText(text).width > maxWidth && s > 24) { s -= 2; ctx.font = font(s, weight); }
+      };
+      const wrap = (text, maxWidth) => {
+        const words = String(text).split(' ');
+        const lines = [];
+        let line = '';
+        words.forEach(w => {
+          const test = line ? line + ' ' + w : w;
+          if (ctx.measureText(test).width > maxWidth && line) { lines.push(line); line = w; } else { line = test; }
+        });
+        if (line) lines.push(line);
+        return lines;
+      };
+
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#00E699';
+      ctx.font = font(44, 800);
+      ctx.fillText('COLLEGE CRICKET TOURNAMENT', W / 2, 120);
+      ctx.fillStyle = '#94A3B8';
+      ctx.font = font(34, 600);
+      ctx.fillText(`${when ? when + '  •  ' : ''}${match.overs} overs match`, W / 2, 175);
+
+      const block = (name, st, y) => {
+        ctx.fillStyle = 'rgba(255,255,255,0.06)';
+        ctx.fillRect(80, y, W - 160, 230);
+        ctx.fillStyle = '#FFFFFF';
+        fit(name, W - 240, 56, 800);
+        ctx.fillText(name, W / 2, y + 85);
+        ctx.fillStyle = '#FFB703';
+        ctx.font = font(100, 800);
+        ctx.fillText(`${st.totalRuns}/${st.wickets}`, W / 2, y + 185);
+        ctx.fillStyle = '#94A3B8';
+        ctx.font = font(32, 600);
+        ctx.textAlign = 'right';
+        ctx.fillText(`(${st.oversFormatted} ov)`, W - 110, y + 185);
+        ctx.textAlign = 'center';
+      };
+      block(match.teamA, in1, 240);
+      block(match.teamB, in2, 500);
+
+      ctx.fillStyle = 'rgba(0,230,153,0.15)';
+      ctx.fillRect(80, 770, W - 160, 170);
+      ctx.fillStyle = '#00E699';
+      ctx.font = font(46, 800);
+      const lines = wrap('🏆 ' + result, W - 220).slice(0, 3);
+      const startY = 770 + 85 - ((lines.length - 1) * 28);
+      lines.forEach((l, i) => ctx.fillText(l, W / 2, startY + i * 56));
+
+      ctx.fillStyle = '#64748B';
+      ctx.font = font(30, 600);
+      ctx.fillText(window.location.host || 'college cricket tournament', W / 2, 1030);
+
+      canvas.toBlob((blob) => resolve(blob), 'image/png');
+    });
   },
 
   // ==========================================
@@ -70,6 +593,9 @@ const App = {
       case 'navigate': return this.navigateTo(d.view);
       case 'deleteMatch': return this.confirmDeleteMatch(d.id);
       case 'editMatchDate': return this.openEditMatchDateModal(d.id);
+      case 'editFixture': return this.openFixtureModal(d.id);
+      case 'deleteFixture': return this.confirmDeleteFixture(d.id);
+      case 'shareResult': return this.shareResultCard(d.id);
       case 'scorecard': return this.openFullScorecardModal(d.id);
       case 'toggleOver': return this.toggleOverHistory(d.target);
       case 'share': return this.shareLiveMatch(d.id, d.teamA, d.teamB, d.score, d.overs);
@@ -334,45 +860,6 @@ const App = {
         }
       });
     }
-
-    // Firebase config modal toggle
-    const btnOpenFbConfig = document.getElementById('btn-open-firebase-config');
-    if (btnOpenFbConfig) {
-      btnOpenFbConfig.addEventListener('click', () => {
-        this.closeModal('modal-staff-login');
-        this.openModal('modal-firebase-config');
-        const txt = document.getElementById('firebase-config-textarea');
-        if (txt) {
-          txt.value = localStorage.getItem(AppDB.STORAGE_KEYS.FIREBASE_CONFIG) || '';
-        }
-      });
-    }
-
-    const btnSaveFbConfig = document.getElementById('btn-save-firebase-config');
-    if (btnSaveFbConfig) {
-      btnSaveFbConfig.addEventListener('click', async () => {
-        const txt = document.getElementById('firebase-config-textarea').value.trim();
-        if (!txt) return;
-        try {
-          const parsed = JSON.parse(txt);
-          localStorage.setItem(AppDB.STORAGE_KEYS.FIREBASE_CONFIG, JSON.stringify(parsed));
-          await AppDB.initFirebase(parsed);
-          this.closeModal('modal-firebase-config');
-          this.showToast('Firebase configuration saved and connected!', 'success');
-        } catch (err) {
-          this.showToast('Invalid JSON configuration', 'error');
-        }
-      });
-    }
-
-    const btnClearFbConfig = document.getElementById('btn-clear-firebase-config');
-    if (btnClearFbConfig) {
-      btnClearFbConfig.addEventListener('click', () => {
-        localStorage.removeItem(AppDB.STORAGE_KEYS.FIREBASE_CONFIG);
-        this.closeModal('modal-firebase-config');
-        this.showToast('Firebase config cleared. Running in local mode.', 'info');
-      });
-    }
   },
 
   onAuthStateChanged(user) {
@@ -418,6 +905,7 @@ const App = {
 
     this.renderPlayersTable();
     this.renderTeamsView();
+    this.renderFixturesView();
   },
 
   onConnectionStatusChanged(status) {
@@ -440,6 +928,9 @@ const App = {
       text.textContent = 'Live';
       if (offlineBanner) offlineBanner.classList.remove('visible');
     }
+
+    if (AppDB.lastSyncOkAt) this.finishFirstLoad();
+    this.updateSyncBar();
   },
 
   // ==========================================
@@ -639,7 +1130,8 @@ const App = {
         const motto = document.getElementById('edit-team-motto').value.trim();
 
         try {
-          await AppDB.updateTeam(teamId, { name, captainId, viceCaptainId, motto });
+          // captain/viceCaptain (old name-based fields) are cleared: the choice made here is final
+          await AppDB.updateTeam(teamId, { name, captainId, viceCaptainId, captain: null, viceCaptain: null, motto });
           this.closeModal('modal-edit-team');
           this.showToast(`🏆 Team "${name}" updated successfully!`, 'success');
           this.renderTeamsView();
@@ -693,6 +1185,20 @@ const App = {
     }
   },
 
+  // Captain / vice-captain of a team. Teams created before leaders were stored by id only carry
+  // names (and per-player flags), so fall back to those until someone picks leaders in Edit Team.
+  getTeamLeaders(team, pMap) {
+    const members = (team.playerIds || []).map(id => pMap[id]).filter(Boolean);
+    const pick = (explicitId, legacyName, flag) => {
+      if (explicitId !== undefined) return explicitId ? (pMap[explicitId] || null) : null;
+      return members.find(p => p.name === legacyName) || members.find(p => p[flag]) || null;
+    };
+    return {
+      cap: pick(team.captainId, team.captain, 'isCaptain'),
+      vc: pick(team.viceCaptainId, team.viceCaptain, 'isViceCaptain')
+    };
+  },
+
   openAddTeamModal() {
     const form = document.getElementById('form-add-team');
     if (form) form.reset();
@@ -728,13 +1234,14 @@ const App = {
 
     // Populate squad members for Captain & VC selection
     const teamPlayerList = (team.playerIds || []).map(pid => pMap[pid]).filter(Boolean);
+    const leaders = this.getTeamLeaders(team, pMap);
     const optionsHtml = `
       <option value="">-- No Captain Selected --</option>
-      ${teamPlayerList.map(p => `<option value="${this.escapeHtml(p.id)}" ${p.id === team.captainId ? 'selected' : ''}>${this.escapeHtml(p.name)} (${this.escapeHtml(p.role)})</option>`).join('')}
+      ${teamPlayerList.map(p => `<option value="${this.escapeHtml(p.id)}" ${leaders.cap && p.id === leaders.cap.id ? 'selected' : ''}>${this.escapeHtml(p.name)} (${this.escapeHtml(p.role)})</option>`).join('')}
     `;
     const vcOptionsHtml = `
       <option value="">-- No Vice-Captain Selected --</option>
-      ${teamPlayerList.map(p => `<option value="${this.escapeHtml(p.id)}" ${p.id === team.viceCaptainId ? 'selected' : ''}>${this.escapeHtml(p.name)} (${this.escapeHtml(p.role)})</option>`).join('')}
+      ${teamPlayerList.map(p => `<option value="${this.escapeHtml(p.id)}" ${leaders.vc && p.id === leaders.vc.id ? 'selected' : ''}>${this.escapeHtml(p.name)} (${this.escapeHtml(p.role)})</option>`).join('')}
     `;
 
     if (capSelect) capSelect.innerHTML = optionsHtml;
@@ -887,8 +1394,7 @@ const App = {
     // Render team cards
     container.innerHTML = teams.map((team) => {
       const stats = TeamEngine.calculateTeamStats(team, pMap);
-      const cap = team.captainId ? pMap[team.captainId] : null;
-      const vc = team.viceCaptainId ? pMap[team.viceCaptainId] : null;
+      const { cap, vc } = this.getTeamLeaders(team, pMap);
       const leadParts = [];
       if (cap) leadParts.push(`👑 <strong>${this.escapeHtml(cap.name)}</strong> (C)`);
       if (vc) leadParts.push(`⚡ <strong>${this.escapeHtml(vc.name)}</strong> (VC)`);
@@ -929,8 +1435,8 @@ const App = {
               const p = pMap[pid];
               if (!p) return '';
               const r = CricketEngine.calculateRating(p);
-              const isCap = (p.id === team.captainId);
-              const isVc = (p.id === team.viceCaptainId);
+              const isCap = Boolean(cap && p.id === cap.id);
+              const isVc = Boolean(vc && p.id === vc.id);
               return `
                 <div class="player-chip">
                   <div>
@@ -1162,6 +1668,13 @@ const App = {
     if (selectBowler) {
       selectBowler.addEventListener('change', async () => {
         if (!this.activeScoringMatch) return;
+        const limit = this.getBowlerOverLimit(this.activeScoringMatch);
+        const chosen = this.getCurrentInningsStats(this.activeScoringMatch).bowlers[selectBowler.value];
+        if (chosen && chosen.legalBalls >= limit * 6) {
+          this.showToast(`That bowler has already bowled the maximum ${limit} overs. Please choose another bowler.`, 'error');
+          this.renderScoringConsole();
+          return;
+        }
         this.activeScoringMatch.bowlerId = selectBowler.value;
         await AppDB.updateMatch(this.activeScoringMatch.id, { bowlerId: selectBowler.value });
         this.renderScoringConsole();
@@ -1189,6 +1702,12 @@ const App = {
       });
     }
 
+    // Next bowler (after an over)
+    const btnConfirmNextBowler = document.getElementById('btn-confirm-next-bowler');
+    if (btnConfirmNextBowler) {
+      btnConfirmNextBowler.addEventListener('click', () => this.confirmNextBowler());
+    }
+
     // 9. Confirm Wicket Modal Button
     const btnConfirmWicket = document.getElementById('btn-confirm-wicket');
     if (btnConfirmWicket) {
@@ -1198,9 +1717,11 @@ const App = {
     // Wicket type selector change for run-out
     const wicketTypeSelect = document.getElementById('wicket-type-select');
     const runoutGroup = document.getElementById('runout-player-group');
+    const runoutRunsGroup = document.getElementById('runout-runs-group');
     if (wicketTypeSelect && runoutGroup) {
       wicketTypeSelect.addEventListener('change', () => {
         runoutGroup.style.display = wicketTypeSelect.value === 'runout' ? 'block' : 'none';
+        if (runoutRunsGroup) runoutRunsGroup.style.display = wicketTypeSelect.value === 'runout' ? 'block' : 'none';
       });
     }
   },
@@ -1337,7 +1858,7 @@ const App = {
 
     if (bowlerStats && liveMatch.bowlerId) {
       const bw = currentInningsStats.bowlers[liveMatch.bowlerId] || { oversFormatted: '0.0', wickets: 0, runsConceded: 0, economy: '0.00' };
-      bowlerStats.textContent = `${bw.oversFormatted} ov • ${bw.wickets} wkts, ${bw.runsConceded} runs • Econ: ${bw.economy}`;
+      bowlerStats.textContent = `${bw.oversFormatted}/${this.getBowlerOverLimit(liveMatch)} ov • ${bw.wickets} wkts, ${bw.runsConceded} runs • Econ: ${bw.economy}`;
     }
 
     // Current over deliveries reel
@@ -1364,6 +1885,8 @@ const App = {
     if (!this.activeScoringMatch) return;
     const match = this.activeScoringMatch;
     const mod = forcedModifier || this.currentModifier;
+
+    if (!this.ensureBowlerAllowed(match)) return;
 
     this.vibrate(40);
 
@@ -1450,6 +1973,9 @@ const App = {
     });
 
     this.renderScoringConsole();
+
+    // Over finished: ask who bowls next
+    this.maybePromptNextBowler(match);
 
     // Check automatic innings finish or target chase (FR-14)
     this.checkAutoMatchCompletion();
@@ -1646,6 +2172,16 @@ const App = {
       }
     }
 
+    // Keep the run-out pickers in sync with the remembered dismissal type
+    const wicketTypeNow = document.getElementById('wicket-type-select');
+    const showRunout = Boolean(wicketTypeNow && wicketTypeNow.value === 'runout');
+    ['runout-player-group', 'runout-runs-group'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = showRunout ? 'block' : 'none';
+    });
+    const runoutRunsSelect = document.getElementById('runout-runs-select');
+    if (runoutRunsSelect) runoutRunsSelect.value = '0';
+
     this.openModal('modal-wicket');
   },
 
@@ -1656,6 +2192,14 @@ const App = {
     const wType = document.getElementById('wicket-type-select').value;
     const runoutWho = document.getElementById('runout-player-select').value;
     const nextBatterId = document.getElementById('select-next-batter').value;
+    const runoutRuns = (wType === 'runout')
+      ? Math.max(0, Math.min(3, Number(document.getElementById('runout-runs-select')?.value) || 0))
+      : 0;
+
+    if (!this.ensureBowlerAllowed(match)) {
+      this.closeModal('modal-wicket');
+      return;
+    }
 
     this.vibrate(80);
 
@@ -1677,13 +2221,13 @@ const App = {
       batterId: match.strikerId,
       nonStrikerId: match.nonStrikerId,
       bowlerId: match.bowlerId,
-      runs: 0,
+      runs: runoutRuns,
       extraType: null,
       isWicket: true,
       wicketType: wType,
       outPlayerId: outPlayerId,
       isLegal: true,
-      totalRuns: 0,
+      totalRuns: runoutRuns,
       snapshot: snapshot
     };
 
@@ -1694,6 +2238,13 @@ const App = {
       } else {
         match.nonStrikerId = nextBatterId;
       }
+    }
+
+    // Batters crossed if an odd number of runs was completed before the run out
+    if (runoutRuns % 2 === 1) {
+      const crossed = match.strikerId;
+      match.strikerId = match.nonStrikerId;
+      match.nonStrikerId = crossed;
     }
 
     match.balls = match.balls || [];
@@ -1721,6 +2272,7 @@ const App = {
     });
 
     this.renderScoringConsole();
+    this.maybePromptNextBowler(match);
     this.checkAutoMatchCompletion();
   },
 
@@ -1855,12 +2407,24 @@ const App = {
     const in1 = CricketEngine.replayInnings(in1Balls, match.teamAPlayerIds || [], match.teamBPlayerIds || [], match.overs);
     const in2 = CricketEngine.replayInnings(in2Balls, match.teamBPlayerIds || [], match.teamAPlayerIds || [], match.overs);
 
-    const result = CricketEngine.generateMatchResultText(match.teamA, match.teamB, in1, in2, match.overs, (match.teamBPlayerIds || []).length);
+    let result = CricketEngine.generateMatchResultText(match.teamA, match.teamB, in1, in2, match.overs, (match.teamBPlayerIds || []).length);
     const matchNrr = CricketEngine.calculateMatchNetRunRate(match);
+
+    // Finishing before the match is complete: say so in the result instead of "Match in progress"
+    const chased = in2.totalRuns > in1.totalRuns;
+    const isComplete = chased || (match.currentInnings === 2 && in2.isInningsOver);
+    if (result === 'Match in progress') {
+      const lead = in1.totalRuns - in2.totalRuns;
+      result = lead === 0
+        ? 'Match Tied (ended early)'
+        : `${match.teamA} won by ${lead} run${lead !== 1 ? 's' : ''} (ended early)`;
+    }
+    const earlyWarning = isComplete ? '' :
+      `⚠️ This match is NOT complete (${match.currentInnings === 1 ? '1st innings still in progress' : match.teamB + ' are still batting'}). Finishing now locks the score and gives points on the runs scored so far.\n\n`;
 
     const nrrPrompt = matchNrr ? `\n\nNet Run Rate (NRR) Impact:\n• ${match.teamA}: ${matchNrr.teamA.nrrFormatted} (RR: ${matchNrr.teamA.runRate})\n• ${match.teamB}: ${matchNrr.teamB.nrrFormatted} (RR: ${matchNrr.teamB.runRate})` : '';
 
-    if (confirm(`Finish match and publish final scorecard?\n\nResult: ${result}${nrrPrompt}`)) {
+    if (confirm(`${earlyWarning}Finish match and publish final scorecard?\n\nResult: ${result}${nrrPrompt}`)) {
       match.status = 'done';
       match.result = result;
       match.nrrData = matchNrr;
@@ -2010,10 +2574,7 @@ const App = {
   setupLiveView() {
     const btnRefresh = document.getElementById('btn-refresh-live');
     if (btnRefresh) {
-      btnRefresh.addEventListener('click', () => {
-        this.renderLiveView();
-        this.showToast('Live scores updated', 'info');
-      });
+      btnRefresh.addEventListener('click', () => this.refreshNow(true));
     }
   },
 
@@ -2037,6 +2598,7 @@ const App = {
           <div class="empty-icon">🏏</div>
           <div class="empty-title">No Match Currently Live</div>
           <p style="margin-bottom: 16px;">The tournament umpire will start live ball-by-ball scoring once players take the field.</p>
+          ${this.renderNextFixtureHtml()}
           <div style="display: flex; justify-content: center; gap: 8px;">
             <button class="btn-primary" data-action="navigate" data-view="view-history">View Match History</button>
             <button class="btn-secondary" data-action="navigate" data-view="view-teams">View Teams & Squads</button>
@@ -2517,9 +3079,14 @@ const App = {
         })()}
 
         <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-          <button class="btn-secondary" style="padding: 6px 14px; min-height: 38px; font-size: 0.8rem;" data-action="scorecard" data-id="${this.escapeHtml(match.id)}">
-            📋 Full Scorecard
-          </button>
+          <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+            <button class="btn-secondary" style="padding: 6px 14px; min-height: 38px; font-size: 0.8rem;" data-action="scorecard" data-id="${this.escapeHtml(match.id)}">
+              📋 Full Scorecard
+            </button>
+            <button class="btn-share" style="padding: 6px 14px; min-height: 38px; font-size: 0.8rem;" data-action="shareResult" data-id="${this.escapeHtml(match.id)}">
+              📲 Share
+            </button>
+          </div>
 
           ${(canDelete && showDelete) ? `
             <div style="display: flex; gap: 6px;">
@@ -2811,10 +3378,7 @@ const App = {
   setupTableView() {
     const btnRefresh = document.getElementById('btn-refresh-table');
     if (btnRefresh) {
-      btnRefresh.addEventListener('click', () => {
-        this.renderPointsTable();
-        this.showToast('📊 Standings updated', 'info');
-      });
+      btnRefresh.addEventListener('click', () => this.refreshNow(true));
     }
   },
 
@@ -2831,6 +3395,8 @@ const App = {
     }
 
     const tableRows = CricketEngine.calculatePointsTable(matches, teams);
+    const showQ = tableRows.some(r => r.played > 0);
+    this.updateTableLegend();
 
     tbody.innerHTML = tableRows.map((row, idx) => {
       const rank = idx + 1;
@@ -2848,7 +3414,7 @@ const App = {
           </td>
           <td>
             <div class="table-team-name">
-              <span>${this.escapeHtml(row.teamName)}</span>
+              <span>${this.escapeHtml(row.teamName)}</span>${showQ && rank <= this.QUALIFY_SPOTS ? '<span class="q-badge" title="In a qualifying position">Q</span>' : ''}
             </div>
             ${row.motto ? `<div class="table-team-motto">"${this.escapeHtml(row.motto)}"</div>` : ''}
           </td>
@@ -2875,11 +3441,13 @@ const App = {
 
   onTeamsDataChanged() {
     this.renderTeamsView();
+    this.renderFixturesView();
     this.renderPointsTable();
     if (this.activeView === 'view-scoring') this.renderScoringConsole();
   },
 
   onMatchesDataChanged() {
+    this.renderFixturesView();
     this.renderLiveView();
     this.renderHistoryView();
     this.renderPlayersTable();
@@ -2888,6 +3456,7 @@ const App = {
   },
 
   renderAll() {
+    this.renderFixturesView();
     this.renderLiveView();
     this.renderPointsTable();
     this.renderHistoryView();

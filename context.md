@@ -153,3 +153,20 @@ points table with ICC-style Net Run Rate, match history/scorecards, and player l
 - State lives in localStorage; always go through `AppDB` mutators so `notifyListeners`, `broadcast` and `pushToCloud` all fire.
 - Never store derived stats — everything is replayed from `balls`; add new ball fields additively so old matches still replay.
 - FR-n comments in the code refer to an external requirements list (not in the repo).
+
+---
+
+## 8. Later additions (after the P0 fixes)
+
+- **Past matches:** History > "Add Past Match" (staff) saves a result from final scores only (`match.summary = {inn1, inn2}`, `manual: true`). `CricketEngine.getInningsStats(match, 1|2)` is the single entry point for innings totals: it returns the summary when present, otherwise replays the balls. Always use it instead of calling `replayInnings` directly on a stored match.
+- **Match merge:** matches sync by id (server and client), deletions travel as `deletedMatchIds`, so a device can never drop another device's match. Edit a finished match's date from History > Edit Date.
+- **Network-first service worker** (`sw.js`) plus an automatic one-time reload when a new worker takes over.
+- **Sync UX:** a slim bar under the header shows "Live • updated N s ago" with Refresh now; pull-to-refresh (not on the scoring screen); first-ever visit shows a skeleton until the first sync. `AppDB.lastSyncOkAt` is the source of truth. Polling: 2 s while a match is live / staff signed in / unsent changes, 8 s otherwise, none while the tab is hidden.
+- **Fixtures tab:** new synced section `fixtures` (`AppDB.addFixture/updateFixture/deleteFixture`, staff only). A fixture shows its result automatically by pairing it with a finished/live match between the same two teams (`App.getFixtureViews`).
+- **Points table:** "Q" marks the top `App.QUALIFY_SPOTS` (2) teams; head-to-head wins is the last tie-break after points, NRR and wins. For/Against columns were removed from the table.
+- **Scoring screen:** after each over a "choose next bowler" dialog appears (previous bowler excluded); per-bowler limit = max(ceil(overs/5), ceil(overs/squad)); the limit is also enforced from the bowler dropdown and before each ball. A run out can record 0-3 runs completed (batters are crossed on odd runs). Finishing an incomplete match warns and saves "... (ended early)" instead of "Match in progress".
+- **Share:** every finished match card has "Share" which builds a PNG result card (canvas) and shares it via the Web Share API, falling back to text / a WhatsApp link.
+- **Undo data:** only the last `AppDB.UNDO_DEPTH` (24) balls keep their undo snapshot, and finishing a match strips them all.
+- **Captains:** `App.getTeamLeaders` falls back to the legacy name/flag fields for teams that never had leaders picked; the seed now stores `captainId`/`viceCaptainId`.
+- **Firebase removed:** SDK scripts, config modal, `initFirebase`, all Firestore branches and `firestore.rules`.
+- **Tests:** `npm test` (27 tests) covers sync, auth, merges, past matches, fixtures, polling, tie-breaks and run-outs.

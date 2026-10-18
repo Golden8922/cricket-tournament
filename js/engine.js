@@ -323,7 +323,8 @@ const CricketEngine = {
   // Helper for badge display of a ball
   createBallBadge(ball, totalRuns, isWicket) {
     if (isWicket) {
-      return { text: "W", type: "wicket", tooltip: `WICKET (${ball.wicketType || 'Out'})` };
+      const wicketRuns = Number(ball.runs) > 0 ? `${Number(ball.runs)}` : '';
+      return { text: `${wicketRuns}W`, type: "wicket", tooltip: `WICKET (${ball.wicketType || 'Out'}${wicketRuns ? `, ${wicketRuns} run${Number(ball.runs) > 1 ? 's' : ''} completed` : ''})` };
     }
     if (ball.isDroppedCatch || ball.droppedCatch) {
       const runTxt = totalRuns > 0 ? `${totalRuns} (DC)` : "DC";
@@ -467,6 +468,11 @@ const CricketEngine = {
   // Calculate Points Table with Net Run Rate (NRR)
   calculatePointsTable(matches = [], teams = []) {
     const table = {};
+    const h2h = {}; // h2h[winner][loser] = wins in matches between those two teams
+    const recordWin = (winner, loser) => {
+      h2h[winner] = h2h[winner] || {};
+      h2h[winner][loser] = (h2h[winner][loser] || 0) + 1;
+    };
 
     teams.forEach(t => {
       table[t.name] = {
@@ -522,6 +528,7 @@ const CricketEngine = {
         teamB.won += 1;
         teamB.points += 2;
         teamA.lost += 1;
+        recordWin(m.teamB, m.teamA);
       } else if (in2.totalRuns === in1.totalRuns) {
         teamA.tied += 1;
         teamB.tied += 1;
@@ -531,6 +538,7 @@ const CricketEngine = {
         teamA.won += 1;
         teamA.points += 2;
         teamB.lost += 1;
+        recordWin(m.teamA, m.teamB);
       }
     });
 
@@ -548,7 +556,9 @@ const CricketEngine = {
     return Object.values(table).sort((a, b) => {
       if (b.points !== a.points) return b.points - a.points;
       if (b.nrr !== a.nrr) return b.nrr - a.nrr;
-      return b.won - a.won;
+      if (b.won !== a.won) return b.won - a.won;
+      // Last tie-break: head-to-head wins between the two teams
+      return ((h2h[b.teamName] || {})[a.teamName] || 0) - ((h2h[a.teamName] || {})[b.teamName] || 0);
     });
   },
 

@@ -2,7 +2,7 @@ const { put, list } = require('@vercel/blob');
 const { verifyToken, getBearerToken } = require('./_auth');
 
 const BLOB_FILENAME = 'tournament_state.json';
-const SECTIONS = ['players', 'teams', 'matches'];
+const SECTIONS = ['players', 'teams', 'matches', 'fixtures'];
 const MAX_BODY_BYTES = 3.5 * 1024 * 1024; // Vercel functions accept ~4.5 MB bodies
 const MAX_DELETED_IDS = 500;
 

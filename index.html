@@ -19,10 +19,6 @@
   <!-- Stylesheet -->
   <link rel="stylesheet" href="css/styles.css">
 
-  <!-- Firebase Compat SDK for Standalone Zero-Build Compatibility -->
-  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
 </head>
 <body>
   <div id="app">
@@ -70,6 +66,24 @@
         <button id="btn-pwa-install" class="install-banner-btn">Install</button>
         <button id="btn-pwa-dismiss" class="icon-btn" style="width: 32px; height: 32px; min-height: 32px; font-size: 0.9rem;" title="Dismiss">✕</button>
       </div>
+    </div>
+
+    <!-- Last-updated / sync status bar -->
+    <div id="sync-bar" class="sync-bar" role="status" aria-live="polite">
+      <span id="sync-bar-dot" class="sync-dot"></span>
+      <span id="sync-bar-text">Syncing latest data…</span>
+      <button id="sync-bar-refresh" class="sync-bar-btn" type="button" title="Fetch the latest data now">↻ Refresh now</button>
+    </div>
+
+    <!-- Pull-to-refresh indicator -->
+    <div id="ptr-indicator" class="ptr-indicator" aria-hidden="true"><span id="ptr-indicator-text">↓ Pull to refresh</span></div>
+
+    <!-- First visit: shown until the first sync finishes (never for returning visitors) -->
+    <div id="first-load-skeleton" class="first-load-skeleton" aria-hidden="true">
+      <div class="skeleton-line" style="width: 55%; height: 22px;"></div>
+      <div class="skeleton-card"></div>
+      <div class="skeleton-card"></div>
+      <div class="skeleton-line" style="width: 40%;"></div>
     </div>
 
     <!-- Main Views Container -->
@@ -133,6 +147,8 @@
           </div>
         </div>
 
+        <div id="table-legend" class="table-legend"></div>
+
         <!-- NRR Explainer Card -->
         <div class="card" style="background: rgba(16, 185, 129, 0.05); border: 1px solid rgba(16, 185, 129, 0.2);">
           <div style="display: flex; gap: 10px; align-items: flex-start;">
@@ -149,6 +165,22 @@
       <!-- ==============================================
            2. TEAMS & PLAYERS VIEW
            ============================================== -->
+      <!-- ==============================================
+           FIXTURES / SCHEDULE VIEW
+           ============================================== -->
+      <section id="view-fixtures" class="view-panel">
+        <div class="section-header">
+          <div>
+            <h1 class="section-title">📅 Fixtures & Schedule</h1>
+            <p class="section-subtitle">Who plays whom and when. Results appear here automatically.</p>
+          </div>
+          <button id="btn-open-add-fixture" data-staff-only class="btn-primary" style="padding: 8px 14px; min-height: 38px; font-size: 0.85rem;">
+            ➕ Add Fixture
+          </button>
+        </div>
+        <div id="fixtures-list"></div>
+      </section>
+
       <section id="view-teams" class="view-panel">
         <div class="section-header">
           <div>
@@ -442,6 +474,10 @@
       <a href="#table" class="nav-item" data-view="view-table" id="nav-item-table">
         <span class="nav-icon">📊</span>
         <span>Table</span>
+      </a>
+      <a href="#fixtures" class="nav-item" data-view="view-fixtures" id="nav-item-fixtures">
+        <span class="nav-icon">📅</span>
+        <span>Fixtures</span>
       </a>
       <a href="#teams" class="nav-item" data-view="view-teams" id="nav-item-teams">
         <span class="nav-icon">🛡️</span>
@@ -876,11 +912,6 @@
           </button>
         </form>
 
-        <div style="margin-top: 16px; text-align: center; border-top: 1px solid var(--border-subtle); padding-top: 12px;">
-          <button id="btn-open-firebase-config" style="font-size: 0.75rem; color: var(--text-muted); text-decoration: underline;">
-            ⚙️ Connect Custom Firebase Config
-          </button>
-        </div>
       </div>
     </div>
 
@@ -909,6 +940,16 @@
           <select id="runout-player-select" class="form-select">
             <option value="striker">Striker</option>
             <option value="nonStriker">Non-Striker</option>
+          </select>
+        </div>
+
+        <div class="form-group" id="runout-runs-group" style="display: none;">
+          <label class="form-label" for="runout-runs-select">Runs completed before the run out</label>
+          <select id="runout-runs-select" class="form-select">
+            <option value="0" selected>0 runs</option>
+            <option value="1">1 run</option>
+            <option value="2">2 runs</option>
+            <option value="3">3 runs</option>
           </select>
         </div>
 
@@ -1012,21 +1053,49 @@
       </div>
     </div>
 
-    <!-- 5. Firebase Custom Config Modal -->
-    <div id="modal-firebase-config" class="modal-overlay">
+    <!-- Modal: Add / Edit Fixture -->
+    <div id="modal-fixture" class="modal-overlay">
       <div class="modal-dialog">
         <div class="modal-header">
-          <h2 class="modal-title">⚙️ Firebase Settings</h2>
-          <button class="modal-close-btn" data-close-modal="modal-firebase-config">✕</button>
+          <h2 class="modal-title" id="fixture-modal-title">➕ Add Fixture</h2>
+          <button class="modal-close-btn" data-close-modal="modal-fixture">✕</button>
         </div>
-        <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 12px;">
-          Paste your Firebase web config JSON below to link your live Firestore project:
-        </p>
-        <textarea id="firebase-config-textarea" class="form-input" rows="8" placeholder='{"apiKey": "...", "authDomain": "...", "projectId": "..."}' style="font-family: var(--font-mono); font-size: 0.8rem;"></textarea>
-        <div style="display: flex; gap: 8px; margin-top: 12px;">
-          <button id="btn-save-firebase-config" class="btn-primary" style="flex: 1;">Save & Connect</button>
-          <button id="btn-clear-firebase-config" class="btn-danger">Clear</button>
+        <form id="form-fixture" autocomplete="off">
+          <input type="hidden" id="fixture-id">
+          <div class="form-group">
+            <label class="form-label" for="fixture-team-a">Team A <span class="req">*</span></label>
+            <select id="fixture-team-a" class="form-select" required></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="fixture-team-b">Team B <span class="req">*</span></label>
+            <select id="fixture-team-b" class="form-select" required></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="fixture-datetime">Date & time <span class="req">*</span></label>
+            <input type="datetime-local" id="fixture-datetime" class="form-input" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="fixture-note">Note (optional)</label>
+            <input type="text" id="fixture-note" class="form-input" maxlength="80" placeholder="e.g. Semi-final, Ground 2">
+          </div>
+          <button type="submit" class="btn-primary btn-full" style="margin-top: 8px;"><span>Save Fixture</span></button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Modal: Choose next bowler (after each over) -->
+    <div id="modal-next-bowler" class="modal-overlay">
+      <div class="modal-dialog" style="max-width: 420px;">
+        <div class="modal-header">
+          <h2 class="modal-title">🔔 Over complete</h2>
+          <button class="modal-close-btn" data-close-modal="modal-next-bowler">✕</button>
         </div>
+        <p id="next-bowler-info" style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 10px;"></p>
+        <div class="form-group">
+          <label class="form-label" for="select-next-bowler">Who bowls the next over? <span class="req">*</span></label>
+          <select id="select-next-bowler" class="form-select"></select>
+        </div>
+        <button type="button" id="btn-confirm-next-bowler" class="btn-primary btn-full" style="margin-top: 8px;">Confirm bowler</button>
       </div>
     </div>
 

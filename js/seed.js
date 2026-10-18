@@ -140,6 +140,8 @@ function getInitialTournamentData() {
       motto: t.motto,
       captain: t.captain,
       viceCaptain: t.viceCaptain,
+      captainId: (teamPlayers.find(p => p.name === t.captain) || {}).id || null,
+      viceCaptainId: (teamPlayers.find(p => p.name === t.viceCaptain) || {}).id || null,
       playerIds: teamPlayers.map(p => p.id)
     };
   });

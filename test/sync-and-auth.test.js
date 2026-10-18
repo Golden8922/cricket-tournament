@@ -203,6 +203,8 @@ function loadDb({ token = true, fetchImpl } = {}) {
     navigator: { onLine: true },
     setInterval() { return 0; },
     clearInterval() {},
+    setTimeout() { return 0; },
+    clearTimeout() {},
     Date, JSON, Math, Number, String, Array, Boolean, Promise, Error, Set, Object,
     fetch: async (url, opts = {}) => {
       calls.push({ url: String(url), method: opts.method || 'GET', body: opts.body, headers: opts.headers });
@@ -400,4 +402,106 @@ test('adding a past match requires staff sign-in', async () => {
   const { db } = loadDb({ token: false, fetchImpl: async () => ok({}) });
   db.ensureSeedData();
   await assert.rejects(() => db.addPastMatch({}), /Unauthorized/);
+});
+
+// ---------------------------------------------------------------------------
+// Engine + data features added later
+// ---------------------------------------------------------------------------
+test('table: head-to-head is the last tie-break (after points, NRR and wins)', () => {
+  const { engine } = loadDb({ fetchImpl: async () => ok({}) });
+  const mk = (a, b, ra, rb) => ({
+    id: a + b, teamA: a, teamB: b, overs: 8, status: 'done', createdAt: 1, balls: [],
+    summary: { inn1: { runs: ra, wickets: 0, balls: 48 }, inn2: { runs: rb, wickets: 0, balls: 48 } }
+  });
+  // A beat B 50-40; A lost to C 40-50; B beat D 50-40  => A and B level on points, NRR and wins
+  const matches = [mk('A', 'B', 50, 40), mk('C', 'A', 50, 40), mk('B', 'D', 50, 40)];
+  const teams = ['B', 'A', 'C', 'D'].map((n) => ({ id: n, name: n })); // B listed first on purpose
+  const table = engine.calculatePointsTable(matches, teams).map((r) => r.teamName);
+  assert.deepEqual(table.slice(1, 3), ['A', 'B'], 'A beat B, so A ranks above B');
+});
+
+test('run out with runs completed: runs count for the team and striker, not the bowler wicket', () => {
+  const { engine } = loadDb({ fetchImpl: async () => ok({}) });
+  const balls = [{ innings: 1, batterId: 'p1', bowlerId: 'b1', runs: 2, extraType: null, isWicket: true, wicketType: 'runout', outPlayerId: 'p2', isLegal: true }];
+  const st = engine.replayInnings(balls, ['p1', 'p2', 'p3'], ['b1'], 8);
+  assert.equal(st.totalRuns, 2);
+  assert.equal(st.wickets, 1);
+  assert.equal(st.batters.p1.runs, 2);
+  assert.equal(st.batters.p2.isOut, true);
+  assert.equal(st.bowlers.b1.wickets, 0, 'run out is not credited to the bowler');
+  assert.equal(st.bowlers.b1.runsConceded, 2);
+  assert.equal(engine.createBallBadge(balls[0], 2, true).text, '2W');
+});
+
+test('undo snapshots are kept only for recent balls and dropped when the match finishes', async () => {
+  const { db, storage } = loadDb({ fetchImpl: async () => ok({}) });
+  const balls = Array.from({ length: 40 }, (_, i) => ({ id: 'b' + i, innings: 1, runs: 1, snapshot: { strikerId: 'x' } }));
+  storage.set('cct_matches', JSON.stringify([{ id: 'm1', status: 'live', balls: [] }]));
+  await db.updateMatch('m1', { balls });
+  let saved = JSON.parse(storage.get('cct_matches'))[0].balls;
+  assert.equal(saved.filter((b) => b.snapshot).length, db.UNDO_DEPTH);
+  assert.ok(saved[39].snapshot && !saved[0].snapshot);
+
+  await db.updateMatch('m1', { status: 'done', balls });
+  saved = JSON.parse(storage.get('cct_matches'))[0].balls;
+  assert.equal(saved.filter((b) => b.snapshot).length, 0);
+
+  // finishing with a status-only patch (as the app does) strips the stored balls too
+  storage.set('cct_matches', JSON.stringify([{ id: 'm2', status: 'live', balls }]));
+  await db.updateMatch('m2', { status: 'done', result: 'x' });
+  saved = JSON.parse(storage.get('cct_matches'))[0].balls;
+  assert.equal(saved.filter((b) => b.snapshot).length, 0);
+  assert.equal(saved.length, 40, 'no ball is lost, only the undo data');
+});
+
+test('fixtures: staff only, validated, sorted by time, queued for sync and accepted from the cloud', async () => {
+  const { db, storage } = loadDb({ fetchImpl: async () => ok({}) });
+  db.ensureSeedData();
+  const visitor = loadDb({ token: false, fetchImpl: async () => ok({}) });
+  visitor.db.ensureSeedData();
+  await assert.rejects(() => visitor.db.addFixture({}), /Unauthorized/);
+
+  await assert.rejects(() => db.addFixture({ teamA: 'Falcons', teamB: 'Falcons', scheduledAt: 1 }), /different teams/);
+  await assert.rejects(() => db.addFixture({ teamA: 'Falcons', teamB: 'Nobody', scheduledAt: 1 }), /existing teams/);
+  await assert.rejects(() => db.addFixture({ teamA: 'Falcons', teamB: 'Dominators' }), /date and time/);
+
+  const late = await db.addFixture({ teamA: 'Falcons', teamB: 'Dominators', scheduledAt: 2000, note: ' Final ' });
+  await db.addFixture({ teamA: 'Sitare Strikers', teamB: 'Power Smashers', scheduledAt: 1000 });
+  const list = JSON.parse(storage.get('cct_fixtures'));
+  assert.deepEqual(list.map((f) => f.scheduledAt), [1000, 2000]);
+  assert.equal(list[1].note, 'Final');
+  assert.ok(db.getDirty().includes('fixtures'));
+
+  await db.deleteFixture(late.id);
+  assert.equal(JSON.parse(storage.get('cct_fixtures')).length, 1);
+
+  // another device's fixtures arrive via sync, including an emptied list
+  const other = loadDb({ token: false, fetchImpl: async () => ok({}) });
+  other.db.applyRemote({ updatedAt: 5, fixtures: [{ id: 'f1', teamA: 'A', teamB: 'B', scheduledAt: 1 }] });
+  assert.equal(JSON.parse(other.storage.get('cct_fixtures')).length, 1);
+  other.db.applyRemote({ updatedAt: 6, fixtures: [] });
+  assert.equal(JSON.parse(other.storage.get('cct_fixtures')).length, 0);
+});
+
+test('polling is fast while a match is live or staff are signed in, slow otherwise', async () => {
+  const idle = loadDb({ token: false, fetchImpl: async () => ok({}) });
+  assert.equal(idle.db._pollDelay(), idle.db.CLOUD.POLL_IDLE_MS);
+  idle.storage.set('cct_matches', JSON.stringify([{ id: 'm', status: 'live' }]));
+  assert.equal(idle.db._pollDelay(), idle.db.CLOUD.POLL_LIVE_MS);
+  const staff = loadDb({ fetchImpl: async () => ok({}) });
+  assert.equal(staff.db._pollDelay(), staff.db.CLOUD.POLL_LIVE_MS);
+});
+
+test('refreshNow records when the server was last reached', async () => {
+  const { db } = loadDb({ token: false, fetchImpl: async () => ok({ updatedAt: 3, players: [], teams: [], matches: [] }) });
+  assert.equal(db.lastSyncOkAt, 0);
+  await db.refreshNow();
+  assert.ok(db.lastSyncOkAt > 0);
+});
+
+test('sync API accepts fixtures as a section', async () => {
+  const token = await signIn();
+  const res = await call(sync, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: { sections: { fixtures: [{ id: 'f1', teamA: 'A', teamB: 'B' }] } } });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(JSON.parse(blobStore.body).fixtures, [{ id: 'f1', teamA: 'A', teamB: 'B' }]);
 });

@@ -1,5 +1,5 @@
 // Unified Database & Authentication Layer
-// Supports Vercel Cloud Blob Real-Time Sync + Firebase Firestore + LocalStorage fallback
+// Vercel Blob cloud sync (polling) on top of localStorage
 // Implements FR-1, FR-2, FR-3, FR-18, FR-22, FR-23, FR-24, FR-25
 
 const AppDB = {
@@ -9,39 +9,40 @@ const AppDB = {
     TEAMS: 'cct_teams',
     MATCHES: 'cct_matches',
     AUTH: 'cct_auth_user',
-    FIREBASE_CONFIG: 'cct_firebase_config',
     LAST_SYNC: 'cct_last_synced_at',
+    FIXTURES: 'cct_fixtures',
     DIRTY: 'cct_dirty_sections',
     PENDING_DELETED_MATCHES: 'cct_pending_deleted_matches'
   },
 
   // Sections of the shared state that are synced independently
-  SECTIONS: ['players', 'teams', 'matches'],
+  SECTIONS: ['players', 'teams', 'matches', 'fixtures'],
 
   CLOUD: {
     API_URL: '/api/sync',
     LOGIN_URL: '/api/login',
     CDN_URL: 'https://v0grmksww68yigcw.public.blob.vercel-storage.com/tournament_state.json',
-    POLL_INTERVAL_MS: 2000,
+    POLL_LIVE_MS: 2000,
+    POLL_IDLE_MS: 8000,
     PUSH_RETRY_MS: 5000
   },
 
   _pushRetryAt: 0,
+  _pollTimer: null,
+  _pollingStarted: false,
+  lastSyncOkAt: 0, // when we last heard from the server
 
   broadcastChannel: null,
-  isFirebaseActive: false,
-  firestore: null,
-  firebaseAuth: null,
   _cloudPushPromise: null,
   _cloudPushQueued: false,
   _isPulling: false,
-  _syncInterval: null,
   
   // Real-time listener callbacks
   listeners: {
     players: [],
     teams: [],
     matches: [],
+    fixtures: [],
     auth: [],
     status: []
   },
@@ -85,28 +86,14 @@ const AppDB = {
       localStorage.removeItem(this.STORAGE_KEYS.AUTH);
     }
 
-    // Check if custom Firebase Config is configured
-    const customConfigStr = localStorage.getItem(this.STORAGE_KEYS.FIREBASE_CONFIG);
-    if (customConfigStr && window.firebase) {
-      try {
-        const config = JSON.parse(customConfigStr);
-        if (config.apiKey && config.projectId) {
-          await this.initFirebase(config);
-        }
-      } catch (err) {
-        console.warn('Failed to initialize custom Firebase config, using cloud sync mode:', err);
-      }
-    }
+    // Remove a leftover setting from an old, removed option
+    try { localStorage.removeItem('cct_firebase_config'); } catch (e) {}
 
     // Ensure seed data exists locally
-    if (!this.isFirebaseActive) {
-      this.ensureSeedData();
-    }
+    this.ensureSeedData();
 
-    // Start real-time cloud sync across all devices (Firestore has its own listeners)
-    if (!this.isFirebaseActive) {
-      this.startRealtimeSync();
-    }
+    // Start real-time cloud sync across all devices
+    this.startRealtimeSync();
 
     this.notifyStatusListeners();
     this.notifyAuthListeners();
@@ -137,21 +124,55 @@ const AppDB = {
       this.notifyListeners('teams');
       this.notifyListeners('matches');
       this.broadcast('data_reset');
-      this.queueSync(this.SECTIONS);
+      this.queueSync(['players', 'teams', 'matches']);
     }
   },
 
   // Real-time Cloud Sync Engine (multi-device live scores)
+  // Polls quickly while a match is live (or this device has unsent changes / a staff member is
+  // signed in), slowly otherwise, and not at all while the tab is hidden.
   startRealtimeSync() {
-    if (this._syncInterval) clearInterval(this._syncInterval);
+    if (this._pollingStarted) return;
+    this._pollingStarted = true;
+
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+          clearTimeout(this._pollTimer);
+        } else {
+          this.pullFromCloud();
+          this._scheduleNextPoll();
+        }
+      });
+    }
 
     // Initial pull immediately
     this.pullFromCloud();
+    this._scheduleNextPoll();
+  },
 
-    // Poll every 2 seconds for live real-time score updates across all devices
-    this._syncInterval = setInterval(() => {
-      this.pullFromCloud();
-    }, this.CLOUD.POLL_INTERVAL_MS);
+  _pollDelay() {
+    const liveMatch = this.getLocalMatches().some(m => m && m.status === 'live');
+    return (liveMatch || this.hasUnsentChanges() || this.isStaff())
+      ? this.CLOUD.POLL_LIVE_MS
+      : this.CLOUD.POLL_IDLE_MS;
+  },
+
+  _scheduleNextPoll() {
+    clearTimeout(this._pollTimer);
+    if (typeof document !== 'undefined' && document.hidden) return;
+    this._pollTimer = setTimeout(async () => {
+      await this.pullFromCloud();
+      this._scheduleNextPoll();
+    }, this._pollDelay());
+  },
+
+  // Refresh right now (used by the Refresh buttons and pull-to-refresh)
+  async refreshNow() {
+    clearTimeout(this._pollTimer);
+    await this.pullFromCloud();
+    this._scheduleNextPoll();
+    return this.lastSyncOkAt;
   },
 
   // ---- Dirty-section tracking -------------------------------------------
@@ -203,6 +224,7 @@ const AppDB = {
   getLocalSection(section) {
     if (section === 'players') return this.getLocalPlayers();
     if (section === 'teams') return this.getLocalTeams();
+    if (section === 'fixtures') return this.getLocalFixtures();
     return this.getLocalMatches();
   },
 
@@ -246,6 +268,7 @@ const AppDB = {
           this.setDirty(stillDirty);
           this.setPendingDeletedMatches(this.getPendingDeletedMatches().filter(id => !pendingDeleted.includes(id)));
           if (json && json.data) this.applyRemote(json.data);
+          this.lastSyncOkAt = Date.now();
           this.setConnectionStatus('online');
         } else if (res.status === 401) {
           // Session expired or token rejected: keep changes dirty, ask for re-login
@@ -321,11 +344,11 @@ const AppDB = {
       localStorage.setItem(this.STORAGE_KEYS.LAST_SYNC, String(remoteData.updatedAt));
       const dirty = this.getDirty();
 
-      ['players', 'teams'].forEach(section => {
+      ['players', 'teams', 'fixtures'].forEach(section => {
         if (dirty.includes(section)) return;
         const incoming = remoteData[section];
-        // Never replace squads with an empty list
-        if (!Array.isArray(incoming) || incoming.length === 0) return;
+        // Never replace squads with an empty list (an empty fixture list is a valid state)
+        if (!Array.isArray(incoming) || (incoming.length === 0 && section !== 'fixtures')) return;
 
         const key = this.STORAGE_KEYS[section.toUpperCase()];
         const next = JSON.stringify(incoming);
@@ -379,7 +402,7 @@ const AppDB = {
       if (!remoteData) {
         if (cloudIsEmpty && this.getAuthToken()) {
           // Cloud confirmed empty: let a signed-in staff member seed it
-          this.markDirty(this.SECTIONS);
+          this.markDirty(['players', 'teams', 'matches']);
           this.pushToCloud();
         } else if (!cloudIsEmpty && navigator.onLine !== false) {
           // Both reads failed: never push anything, just report the connection state
@@ -389,6 +412,7 @@ const AppDB = {
       }
 
       this.applyRemote(remoteData);
+      this.lastSyncOkAt = Date.now();
       this.setConnectionStatus('online');
 
       // Anything found only on this device (or still unsent) goes up as soon as staff are signed in
@@ -426,73 +450,6 @@ const AppDB = {
     this.notifyStatusListeners();
   },
 
-  // Initialize real Firebase when config provided
-  async initFirebase(config) {
-    if (!window.firebase) return;
-    try {
-      if (!firebase.apps.length) {
-        firebase.initializeApp(config);
-      }
-      this.firestore = firebase.firestore();
-      this.firebaseAuth = firebase.auth();
-      this.isFirebaseActive = true;
-
-      // Enable Firestore offline persistence
-      try {
-        await this.firestore.enablePersistence({ synchronizeTabs: true });
-      } catch (err) {
-        console.warn('Firestore persistence notice:', err.code);
-      }
-
-      // Attach Firestore real-time snapshots
-      this.firestore.collection('players').onSnapshot((snapshot) => {
-        const players = [];
-        snapshot.forEach(doc => players.push({ id: doc.id, ...doc.data() }));
-        localStorage.setItem(this.STORAGE_KEYS.PLAYERS, JSON.stringify(players));
-        this.notifyListeners('players');
-      }, (err) => {
-        console.error('Firestore players listener error:', err);
-        this.setConnectionStatus('reconnecting');
-      });
-
-      this.firestore.collection('cfg').doc('teams').onSnapshot((doc) => {
-        if (doc.exists) {
-          const teams = doc.data().list || [];
-          localStorage.setItem(this.STORAGE_KEYS.TEAMS, JSON.stringify(teams));
-          this.notifyListeners('teams');
-        }
-      });
-
-      this.firestore.collection('matches').onSnapshot((snapshot) => {
-        const matches = [];
-        snapshot.forEach(doc => matches.push({ id: doc.id, ...doc.data() }));
-        localStorage.setItem(this.STORAGE_KEYS.MATCHES, JSON.stringify(matches));
-        this.notifyListeners('matches');
-      }, (err) => {
-        console.error('Firestore matches listener error:', err);
-        this.setConnectionStatus('reconnecting');
-      });
-
-      // Auth listener
-      this.firebaseAuth.onAuthStateChanged((user) => {
-        if (user) {
-          const email = (user.email || '').toLowerCase();
-          const role = (email.includes('admin') || email === 'admin@college.edu') ? 'admin' : 'umpire';
-          this.currentUser = { email: user.email, role: role, uid: user.uid };
-        } else {
-          this.currentUser = null;
-        }
-        localStorage.setItem(this.STORAGE_KEYS.AUTH, JSON.stringify(this.currentUser));
-        this.notifyAuthListeners();
-      });
-
-      console.log('Firebase Cloud Firestore successfully connected!');
-    } catch (err) {
-      console.error('Error connecting to Firebase:', err);
-      this.isFirebaseActive = false;
-    }
-  },
-
   // Add New Player (with optional immediate team assignment)
   async addPlayer(playerData, teamId = null) {
     this.requireStaff();
@@ -521,12 +478,8 @@ const AppDB = {
       createdAt: Date.now()
     };
 
-    if (this.isFirebaseActive && this.firestore) {
-      await this.firestore.collection('players').doc(newPlayer.id).set(newPlayer);
-    } else {
-      const updated = [newPlayer, ...players];
-      localStorage.setItem(this.STORAGE_KEYS.PLAYERS, JSON.stringify(updated));
-    }
+    const updated = [newPlayer, ...players];
+    localStorage.setItem(this.STORAGE_KEYS.PLAYERS, JSON.stringify(updated));
 
     // If assigned to a team
     if (teamId && teamId !== 'unassigned') {
@@ -557,25 +510,21 @@ const AppDB = {
   // Delete player
   async deletePlayer(playerId) {
     this.requireStaff();
-    if (this.isFirebaseActive && this.firestore) {
-      await this.firestore.collection('players').doc(playerId).delete();
-    } else {
-      const players = this.getLocalPlayers().filter(p => p.id !== playerId);
-      localStorage.setItem(this.STORAGE_KEYS.PLAYERS, JSON.stringify(players));
-      
-      // Also remove from teams
-      const teams = this.getLocalTeams();
-      teams.forEach(t => {
-        t.playerIds = (t.playerIds || []).filter(id => id !== playerId);
-      });
-      localStorage.setItem(this.STORAGE_KEYS.TEAMS, JSON.stringify(teams));
+    const players = this.getLocalPlayers().filter(p => p.id !== playerId);
+    localStorage.setItem(this.STORAGE_KEYS.PLAYERS, JSON.stringify(players));
+    
+    // Also remove from teams
+    const teams = this.getLocalTeams();
+    teams.forEach(t => {
+      t.playerIds = (t.playerIds || []).filter(id => id !== playerId);
+    });
+    localStorage.setItem(this.STORAGE_KEYS.TEAMS, JSON.stringify(teams));
 
-      this.notifyListeners('players');
-      this.notifyListeners('teams');
-      this.broadcast('players');
-      this.broadcast('teams');
-      this.queueSync(['players', 'teams']);
-    }
+    this.notifyListeners('players');
+    this.notifyListeners('teams');
+    this.broadcast('players');
+    this.broadcast('teams');
+    this.queueSync(['players', 'teams']);
   },
 
   // Update Player (Admin & Umpire can update anytime)
@@ -609,9 +558,6 @@ const AppDB = {
       this.broadcast('teams');
     }
 
-    if (this.isFirebaseActive && this.firestore) {
-      await this.firestore.collection('players').doc(playerId).update(playerPatch);
-    }
 
     this.notifyListeners('players');
     this.broadcast('players');
@@ -705,14 +651,10 @@ const AppDB = {
 
   async saveTeams(teams) {
     this.requireStaff();
-    if (this.isFirebaseActive && this.firestore) {
-      await this.firestore.collection('cfg').doc('teams').set({ list: teams, updatedAt: Date.now() });
-    } else {
-      localStorage.setItem(this.STORAGE_KEYS.TEAMS, JSON.stringify(teams));
-      this.notifyListeners('teams');
-      this.broadcast('teams');
-      this.queueSync(['teams']);
-    }
+    localStorage.setItem(this.STORAGE_KEYS.TEAMS, JSON.stringify(teams));
+    this.notifyListeners('teams');
+    this.broadcast('teams');
+    this.queueSync(['teams']);
   },
 
   // Matches Management (FR-9, FR-11, FR-17, FR-19)
@@ -755,15 +697,11 @@ const AppDB = {
       updatedAt: Date.now()
     };
 
-    if (this.isFirebaseActive && this.firestore) {
-      await this.firestore.collection('matches').doc(newMatch.id).set(newMatch);
-    } else {
-      const matches = [newMatch, ...this.getLocalMatches()];
-      localStorage.setItem(this.STORAGE_KEYS.MATCHES, JSON.stringify(matches));
-      this.notifyListeners('matches');
-      this.broadcast('matches');
-      this.queueSync(['matches']);
-    }
+    const matches = [newMatch, ...this.getLocalMatches()];
+    localStorage.setItem(this.STORAGE_KEYS.MATCHES, JSON.stringify(matches));
+    this.notifyListeners('matches');
+    this.broadcast('matches');
+    this.queueSync(['matches']);
 
     return newMatch;
   },
@@ -828,41 +766,113 @@ const AppDB = {
     return match;
   },
 
+  // Undo needs the striker/bowler snapshot only for the most recent balls. Older balls (and every
+  // ball of a finished match) drop it so the saved data stays small and syncs faster.
+  UNDO_DEPTH: 24,
+
+  pruneBallSnapshots(balls, finished) {
+    if (!Array.isArray(balls)) return balls;
+    const keepFrom = finished ? balls.length : Math.max(0, balls.length - this.UNDO_DEPTH);
+    return balls.map((ball, i) => {
+      if (i >= keepFrom || !ball || !ball.snapshot) return ball;
+      const { snapshot, ...rest } = ball;
+      return rest;
+    });
+  },
+
   async updateMatch(matchId, patchData) {
     if (!this.isStaff()) throw new Error('Unauthorized: Staff access required');
 
-    if (this.isFirebaseActive && this.firestore) {
-      await this.firestore.collection('matches').doc(matchId).update({
-        ...patchData,
-        updatedAt: Date.now()
-      });
-    } else {
-      const matches = this.getLocalMatches();
-      const idx = matches.findIndex(m => m.id === matchId);
-      if (idx !== -1) {
-        matches[idx] = { ...matches[idx], ...patchData, updatedAt: Date.now() };
-        localStorage.setItem(this.STORAGE_KEYS.MATCHES, JSON.stringify(matches));
-        this.notifyListeners('matches');
-        this.broadcast('matches');
-        this.queueSync(['matches']);
-      }
+    const matches = this.getLocalMatches();
+    const idx = matches.findIndex(m => m.id === matchId);
+    if (idx !== -1) {
+      const finished = (patchData.status || matches[idx].status) === 'done';
+      // When a match is finished, also strip the balls already stored (the patch may not include them)
+      const ballsToSave = patchData.balls || (finished ? matches[idx].balls : null);
+      const patch = ballsToSave ? { ...patchData, balls: this.pruneBallSnapshots(ballsToSave, finished) } : patchData;
+      matches[idx] = { ...matches[idx], ...patch, updatedAt: Date.now() };
+      localStorage.setItem(this.STORAGE_KEYS.MATCHES, JSON.stringify(matches));
+      this.notifyListeners('matches');
+      this.broadcast('matches');
+      this.queueSync(['matches']);
     }
+  },
+
+  // ---- Fixtures (schedule) ----
+  getLocalFixtures() {
+    try {
+      const str = localStorage.getItem(this.STORAGE_KEYS.FIXTURES);
+      const list = str ? JSON.parse(str) : [];
+      return Array.isArray(list) ? list : [];
+    } catch (e) {
+      return [];
+    }
+  },
+
+  async getFixtures() {
+    return this.getLocalFixtures();
+  },
+
+  _saveFixtures(list) {
+    const sorted = [...list].sort((a, b) => Number(a.scheduledAt || 0) - Number(b.scheduledAt || 0));
+    localStorage.setItem(this.STORAGE_KEYS.FIXTURES, JSON.stringify(sorted));
+    this.notifyListeners('fixtures');
+    this.broadcast('fixtures');
+    this.queueSync(['fixtures']);
+  },
+
+  // data: { teamA, teamB (team names), scheduledAt (ms), note }
+  async addFixture(data) {
+    this.requireStaff();
+    const teams = this.getLocalTeams();
+    if (!teams.some(t => t.name === data.teamA) || !teams.some(t => t.name === data.teamB)) {
+      throw new Error('Please select two existing teams');
+    }
+    if (data.teamA === data.teamB) throw new Error('Please select two different teams');
+    const scheduledAt = Number(data.scheduledAt);
+    if (!Number.isFinite(scheduledAt) || scheduledAt <= 0) throw new Error('Please pick a date and time');
+
+    const fixture = {
+      id: 'f_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
+      teamA: data.teamA,
+      teamB: data.teamB,
+      scheduledAt,
+      note: String(data.note || '').trim().slice(0, 80),
+      createdAt: Date.now()
+    };
+    this._saveFixtures([...this.getLocalFixtures(), fixture]);
+    return fixture;
+  },
+
+  async updateFixture(fixtureId, data) {
+    this.requireStaff();
+    const list = this.getLocalFixtures();
+    const idx = list.findIndex(f => f.id === fixtureId);
+    if (idx === -1) throw new Error('Fixture not found');
+    const next = { ...list[idx], ...data };
+    if (next.teamA === next.teamB) throw new Error('Please select two different teams');
+    if (!Number.isFinite(Number(next.scheduledAt)) || Number(next.scheduledAt) <= 0) throw new Error('Please pick a date and time');
+    next.note = String(next.note || '').trim().slice(0, 80);
+    list[idx] = next;
+    this._saveFixtures(list);
+    return next;
+  },
+
+  async deleteFixture(fixtureId) {
+    this.requireStaff();
+    this._saveFixtures(this.getLocalFixtures().filter(f => f.id !== fixtureId));
   },
 
   // Delete match (Admin & Staff, FR-22)
   async deleteMatch(matchId) {
     if (!this.isStaff()) throw new Error('Unauthorized: Admin or Umpire staff access required');
 
-    if (this.isFirebaseActive && this.firestore) {
-      await this.firestore.collection('matches').doc(matchId).delete();
-    } else {
-      const matches = this.getLocalMatches().filter(m => m.id !== matchId);
-      localStorage.setItem(this.STORAGE_KEYS.MATCHES, JSON.stringify(matches));
-      this.setPendingDeletedMatches([...new Set([...this.getPendingDeletedMatches(), matchId])]);
-      this.notifyListeners('matches');
-      this.broadcast('matches');
-      this.queueSync(['matches']);
-    }
+    const matches = this.getLocalMatches().filter(m => m.id !== matchId);
+    localStorage.setItem(this.STORAGE_KEYS.MATCHES, JSON.stringify(matches));
+    this.setPendingDeletedMatches([...new Set([...this.getPendingDeletedMatches(), matchId])]);
+    this.notifyListeners('matches');
+    this.broadcast('matches');
+    this.queueSync(['matches']);
   },
 
   // Authentication & Role Management (FR-23, FR-24, FR-25)
@@ -952,11 +962,6 @@ const AppDB = {
   },
 
   async logout() {
-    if (this.isFirebaseActive && this.firebaseAuth) {
-      try {
-        await this.firebaseAuth.signOut();
-      } catch (e) {}
-    }
     this.currentUser = null;
     localStorage.removeItem(this.STORAGE_KEYS.AUTH);
     this.notifyAuthListeners();
