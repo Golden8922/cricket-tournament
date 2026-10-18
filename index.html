@@ -158,10 +158,10 @@
             <p class="section-subtitle">Tournament squads, leadership, rosters & player directory</p>
           </div>
           <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-            <button id="btn-open-add-team-modal" class="btn-primary" style="padding: 8px 14px; min-height: 38px; font-size: 0.85rem;">
+            <button id="btn-open-add-team-modal" data-staff-only class="btn-primary" style="padding: 8px 14px; min-height: 38px; font-size: 0.85rem;">
               ➕ Add Team
             </button>
-            <button id="btn-open-add-player-modal" class="btn-secondary" style="padding: 8px 14px; min-height: 38px; font-size: 0.85rem; border-color: var(--pitch-green); color: var(--pitch-green);">
+            <button id="btn-open-add-player-modal" data-staff-only class="btn-secondary" style="padding: 8px 14px; min-height: 38px; font-size: 0.85rem; border-color: var(--pitch-green); color: var(--pitch-green);">
               👤 Add Player
             </button>
             <button id="btn-export-teams" class="btn-secondary" style="padding: 8px 14px; min-height: 38px; font-size: 0.85rem;" title="Export rosters for WhatsApp or print">
@@ -181,7 +181,7 @@
             <h3 style="font-size: 1rem; font-weight: 700; color: var(--gold-amber); margin: 0;">
               ⚠️ Unassigned Players (<span id="unassigned-count">0</span>)
             </h3>
-            <button class="btn-secondary" style="padding: 4px 10px; font-size: 0.75rem; min-height: 30px;" onclick="App.openAddPlayerModal('unassigned')">
+            <button class="btn-secondary" data-staff-only style="padding: 4px 10px; font-size: 0.75rem; min-height: 30px;" onclick="App.openAddPlayerModal('unassigned')">
               ➕ Add to Pool
             </button>
           </div>
@@ -201,7 +201,7 @@
             <p class="section-subtitle">Tournament statistics & player directory</p>
           </div>
           <div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;">
-            <button id="btn-player-tab-add" class="btn-primary" style="padding: 6px 12px; min-height: 34px; font-size: 0.78rem;">
+            <button id="btn-player-tab-add" data-staff-only class="btn-primary" style="padding: 6px 12px; min-height: 34px; font-size: 0.78rem;">
               ➕ Add Player
             </button>
             <button id="sort-players-runs" class="btn-secondary" style="padding: 6px 10px; min-height: 34px; font-size: 0.75rem;">

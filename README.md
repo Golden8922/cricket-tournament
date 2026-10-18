@@ -35,11 +35,30 @@ Then open `http://localhost:8080` in your phone or browser.
 
 ## 👥 Roles & Access Control
 
-| Role | Access | Credentials / Access Method |
+| Role | Access | How to sign in |
 | :--- | :--- | :--- |
 | **Spectator / Student** | View live score, points table, squad rosters, match history | Public, no login required |
-| **Match Umpire** | Score balls, undo mistakes, finish matches, edit teams and players anytime | Tap **Staff Login** -> Enter your Name, select **⚡ Match Umpire**, and enter password `sitare@2029` |
-| **Tournament Admin** | Full access: create/edit/delete teams & players, re-shuffle, live score, auto-balance | Tap **Staff Login** -> Enter your Name, select **👑 Tournament Admin**, and enter password `si` |
+| **Match Umpire** | Score balls, undo mistakes, finish matches, edit teams and players | Tap **Staff Login** → name, **⚡ Match Umpire**, umpire password |
+| **Tournament Admin** | Same as umpire, with its own password | Tap **Staff Login** → name, **👑 Tournament Admin**, admin password |
+
+Passwords are **not** stored in the code or this repo. They are checked on the server (`/api/login`), which returns a signed token that expires after 24 hours. The data API (`/api/sync`) rejects every write that does not carry a valid token, so only signed-in staff can change tournament data.
+
+### Required Vercel environment variables
+
+| Variable | Required | Purpose |
+| :--- | :--- | :--- |
+| `BLOB_READ_WRITE_TOKEN` | yes | Added automatically when a Vercel Blob store is connected |
+| `STAFF_PASSWORD` | **yes** | Umpire password. Without it nobody can sign in (login fails closed) |
+| `ADMIN_PASSWORD` | no | Admin password (defaults to `STAFF_PASSWORD`) |
+| `AUTH_SECRET` | no | Token signing key (defaults to `BLOB_READ_WRITE_TOKEN`) |
+
+Set them in Vercel → Project → Settings → Environment Variables, then redeploy. For local testing of the API use `vercel dev` with a `.env.local` file (git-ignored).
+
+### Tests
+
+```bash
+npm test
+```
 
 ---
 

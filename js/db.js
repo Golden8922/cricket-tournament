@@ -10,14 +10,22 @@ const AppDB = {
     MATCHES: 'cct_matches',
     AUTH: 'cct_auth_user',
     FIREBASE_CONFIG: 'cct_firebase_config',
-    LAST_SYNC: 'cct_last_synced_at'
+    LAST_SYNC: 'cct_last_synced_at',
+    DIRTY: 'cct_dirty_sections'
   },
+
+  // Sections of the shared state that are synced independently
+  SECTIONS: ['players', 'teams', 'matches'],
 
   CLOUD: {
     API_URL: '/api/sync',
+    LOGIN_URL: '/api/login',
     CDN_URL: 'https://v0grmksww68yigcw.public.blob.vercel-storage.com/tournament_state.json',
-    POLL_INTERVAL_MS: 2000
+    POLL_INTERVAL_MS: 2000,
+    PUSH_RETRY_MS: 5000
   },
+
+  _pushRetryAt: 0,
 
   broadcastChannel: null,
   isFirebaseActive: false,
@@ -71,6 +79,10 @@ const AppDB = {
         this.currentUser = null;
       }
     }
+    if (!this.isSessionValid()) {
+      this.currentUser = null;
+      localStorage.removeItem(this.STORAGE_KEYS.AUTH);
+    }
 
     // Check if custom Firebase Config is configured
     const customConfigStr = localStorage.getItem(this.STORAGE_KEYS.FIREBASE_CONFIG);
@@ -90,8 +102,10 @@ const AppDB = {
       this.ensureSeedData();
     }
 
-    // Start real-time cloud sync across all devices
-    this.startRealtimeSync();
+    // Start real-time cloud sync across all devices (Firestore has its own listeners)
+    if (!this.isFirebaseActive) {
+      this.startRealtimeSync();
+    }
 
     this.notifyStatusListeners();
     this.notifyAuthListeners();
@@ -111,6 +125,7 @@ const AppDB = {
 
   // Reset to official 4 teams and 55 players
   resetToDemoData() {
+    this.requireStaff();
     if (typeof getInitialTournamentData !== 'undefined') {
       const initData = getInitialTournamentData();
       localStorage.setItem(this.STORAGE_KEYS.PLAYERS, JSON.stringify(initData.players));
@@ -121,7 +136,7 @@ const AppDB = {
       this.notifyListeners('teams');
       this.notifyListeners('matches');
       this.broadcast('data_reset');
-      this.pushToCloud();
+      this.queueSync(this.SECTIONS);
     }
   },
 
@@ -138,32 +153,86 @@ const AppDB = {
     }, this.CLOUD.POLL_INTERVAL_MS);
   },
 
+  // ---- Dirty-section tracking -------------------------------------------
+  // A section stays "dirty" until the server confirms it received it, so a
+  // failed/offline push is retried and a pull never overwrites unsent work.
+  getDirty() {
+    try {
+      const arr = JSON.parse(localStorage.getItem(this.STORAGE_KEYS.DIRTY) || '[]');
+      return Array.isArray(arr) ? arr.filter(s => this.SECTIONS.includes(s)) : [];
+    } catch (e) {
+      return [];
+    }
+  },
+
+  setDirty(list) {
+    try {
+      if (list.length === 0) localStorage.removeItem(this.STORAGE_KEYS.DIRTY);
+      else localStorage.setItem(this.STORAGE_KEYS.DIRTY, JSON.stringify(list));
+    } catch (e) {}
+  },
+
+  markDirty(sections) {
+    const set = new Set(this.getDirty());
+    sections.forEach(s => { if (this.SECTIONS.includes(s)) set.add(s); });
+    this.setDirty([...set]);
+  },
+
+  getLocalSection(section) {
+    if (section === 'players') return this.getLocalPlayers();
+    if (section === 'teams') return this.getLocalTeams();
+    return this.getLocalMatches();
+  },
+
+  // Mark sections as changed locally and push them to the cloud
+  queueSync(sections) {
+    this.markDirty(sections);
+    return this.pushToCloud();
+  },
+
   async pushToCloud() {
     if (this._cloudPushPromise) {
       this._cloudPushQueued = true;
       return;
     }
 
-    const payload = {
-      players: this.getLocalPlayers(),
-      teams: this.getLocalTeams(),
-      matches: this.getLocalMatches(),
-      updatedAt: Date.now()
-    };
+    const token = this.getAuthToken();
+    const dirty = this.getDirty();
+    if (!token || dirty.length === 0) return;
 
-    localStorage.setItem(this.STORAGE_KEYS.LAST_SYNC, String(payload.updatedAt));
+    const sections = {};
+    dirty.forEach(s => { sections[s] = this.getLocalSection(s); });
 
     this._cloudPushPromise = (async () => {
       try {
         const res = await fetch(this.CLOUD.API_URL, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ sections })
         });
+
         if (res.ok) {
+          const json = await res.json();
+          // Clear only sections that were not edited again while the request was in flight
+          const stillDirty = this.getDirty().filter(s =>
+            !dirty.includes(s) || JSON.stringify(this.getLocalSection(s)) !== JSON.stringify(sections[s])
+          );
+          this.setDirty(stillDirty);
+          if (json && json.data) this.applyRemote(json.data);
           this.setConnectionStatus('online');
+        } else if (res.status === 401) {
+          // Session expired or token rejected: keep changes dirty, ask for re-login
+          this._pushRetryAt = Date.now() + this.CLOUD.PUSH_RETRY_MS;
+          this.handleSessionExpired();
+        } else {
+          this._pushRetryAt = Date.now() + this.CLOUD.PUSH_RETRY_MS;
+          console.warn('Cloud sync push rejected:', res.status);
         }
       } catch (err) {
+        this._pushRetryAt = Date.now() + this.CLOUD.PUSH_RETRY_MS;
         console.warn('Cloud sync push warning:', err.message);
       } finally {
         this._cloudPushPromise = null;
@@ -175,96 +244,85 @@ const AppDB = {
     })();
   },
 
+  // Apply a remote snapshot to local storage, never touching sections with unsent local edits
+  applyRemote(remoteData) {
+    if (!remoteData || !remoteData.updatedAt) return;
+
+    const localSyncedAt = Number(localStorage.getItem(this.STORAGE_KEYS.LAST_SYNC) || 0);
+    if (remoteData.updatedAt <= localSyncedAt) return;
+    localStorage.setItem(this.STORAGE_KEYS.LAST_SYNC, String(remoteData.updatedAt));
+
+    const dirty = this.getDirty();
+    const changed = [];
+
+    this.SECTIONS.forEach(section => {
+      if (dirty.includes(section)) return;
+      const incoming = remoteData[section];
+      if (!Array.isArray(incoming)) return;
+      // Never replace squads with an empty list
+      if (incoming.length === 0 && section !== 'matches') return;
+
+      const key = this.STORAGE_KEYS[section.toUpperCase()];
+      const next = JSON.stringify(incoming);
+      if (localStorage.getItem(key) !== next) {
+        localStorage.setItem(key, next);
+        changed.push(section);
+      }
+    });
+
+    changed.forEach(section => this.notifyListeners(section));
+    if (changed.length > 0) this.broadcast('cloud_sync');
+  },
+
   async pullFromCloud() {
     if (this._isPulling || this._cloudPushPromise) return;
+
+    // Retry any unsent local changes first
+    if (this.getDirty().length > 0 && this.getAuthToken() && Date.now() >= this._pushRetryAt) {
+      this.pushToCloud();
+      return;
+    }
+
     this._isPulling = true;
 
     try {
-      // First try direct CDN with cache-busting timestamp
       let remoteData = null;
+      let cloudIsEmpty = false;
+
+      // 1) Direct CDN read with cache-busting timestamp
       try {
         const cdnRes = await fetch(`${this.CLOUD.CDN_URL}?_t=${Date.now()}`, { cache: 'no-store' });
         if (cdnRes.ok) {
-          remoteData = await cdnRes.json();
+          const json = await cdnRes.json();
+          if (json && json.updatedAt) remoteData = json;
         }
       } catch (e) {}
 
-      if (!remoteData || !remoteData.updatedAt) {
+      // 2) Fallback: API read. Only an explicit "empty" answer means the cloud has no data.
+      if (!remoteData) {
         try {
           const apiRes = await fetch(`${this.CLOUD.API_URL}?_t=${Date.now()}`, { cache: 'no-store' });
           if (apiRes.ok) {
             const json = await apiRes.json();
-            remoteData = json.data;
+            if (json && json.status === 'empty') cloudIsEmpty = true;
+            else if (json && json.data && json.data.updatedAt) remoteData = json.data;
           }
         } catch (e) {}
       }
 
-      if (!remoteData || !remoteData.updatedAt) {
-        const localMatches = this.getLocalMatches();
-        const localPlayers = this.getLocalPlayers();
-        if (localPlayers.length > 0 || localMatches.length > 0) {
-          await this.pushToCloud();
+      if (!remoteData) {
+        if (cloudIsEmpty && this.getAuthToken()) {
+          // Cloud confirmed empty: let a signed-in staff member seed it
+          this.markDirty(this.SECTIONS);
+          this.pushToCloud();
+        } else if (!cloudIsEmpty && navigator.onLine !== false) {
+          // Both reads failed: never push anything, just report the connection state
+          this.setConnectionStatus('reconnecting');
         }
         return;
       }
 
-      const localSyncedAt = Number(localStorage.getItem(this.STORAGE_KEYS.LAST_SYNC) || 0);
-
-      // Scorer protection: if local has an active match or finished match not in remote yet, push local!
-      const localMatches = this.getLocalMatches();
-      const hasLocalMatches = localMatches.length > 0;
-      const remoteMatches = remoteData.matches || [];
-      const hasRemoteMatches = remoteMatches.length > 0;
-
-      if (hasLocalMatches && !hasRemoteMatches && localSyncedAt === 0) {
-        await this.pushToCloud();
-        return;
-      }
-
-      // If remote has newer data than local:
-      if (remoteData.updatedAt > localSyncedAt) {
-        localStorage.setItem(this.STORAGE_KEYS.LAST_SYNC, String(remoteData.updatedAt));
-
-        let changedPlayers = false;
-        let changedTeams = false;
-        let changedMatches = false;
-
-        if (Array.isArray(remoteData.players) && remoteData.players.length > 0) {
-          const cur = localStorage.getItem(this.STORAGE_KEYS.PLAYERS);
-          const next = JSON.stringify(remoteData.players);
-          if (cur !== next) {
-            localStorage.setItem(this.STORAGE_KEYS.PLAYERS, next);
-            changedPlayers = true;
-          }
-        }
-
-        if (Array.isArray(remoteData.teams) && remoteData.teams.length > 0) {
-          const cur = localStorage.getItem(this.STORAGE_KEYS.TEAMS);
-          const next = JSON.stringify(remoteData.teams);
-          if (cur !== next) {
-            localStorage.setItem(this.STORAGE_KEYS.TEAMS, next);
-            changedTeams = true;
-          }
-        }
-
-        if (Array.isArray(remoteData.matches)) {
-          const cur = localStorage.getItem(this.STORAGE_KEYS.MATCHES);
-          const next = JSON.stringify(remoteData.matches);
-          if (cur !== next) {
-            localStorage.setItem(this.STORAGE_KEYS.MATCHES, next);
-            changedMatches = true;
-          }
-        }
-
-        if (changedPlayers) this.notifyListeners('players');
-        if (changedTeams) this.notifyListeners('teams');
-        if (changedMatches) this.notifyListeners('matches');
-
-        if (changedPlayers || changedTeams || changedMatches) {
-          this.broadcast('cloud_sync');
-        }
-      }
-
+      this.applyRemote(remoteData);
       this.setConnectionStatus('online');
     } catch (err) {
       console.warn('Cloud pull error:', err.message);
@@ -368,6 +426,7 @@ const AppDB = {
 
   // Add New Player (with optional immediate team assignment)
   async addPlayer(playerData, teamId = null) {
+    this.requireStaff();
     const name = (playerData.name || '').trim();
     const roll = (playerData.roll || '').trim();
     if (!name) throw new Error('Player full name is required');
@@ -417,7 +476,7 @@ const AppDB = {
     this.notifyListeners('teams');
     this.broadcast('players');
     this.broadcast('teams');
-    this.pushToCloud();
+    this.queueSync(['players', 'teams']);
 
     return newPlayer;
   },
@@ -428,6 +487,7 @@ const AppDB = {
 
   // Delete player
   async deletePlayer(playerId) {
+    this.requireStaff();
     if (this.isFirebaseActive && this.firestore) {
       await this.firestore.collection('players').doc(playerId).delete();
     } else {
@@ -445,17 +505,19 @@ const AppDB = {
       this.notifyListeners('teams');
       this.broadcast('players');
       this.broadcast('teams');
-      this.pushToCloud();
+      this.queueSync(['players', 'teams']);
     }
   },
 
   // Update Player (Admin & Umpire can update anytime)
   async updatePlayer(playerId, patchData) {
+    this.requireStaff();
     const players = this.getLocalPlayers();
     const idx = players.findIndex(p => p.id === playerId);
     if (idx === -1) throw new Error('Player not found');
 
-    players[idx] = { ...players[idx], ...patchData, updatedAt: Date.now() };
+    const { teamId: _teamIdIgnored, ...playerPatch } = patchData;
+    players[idx] = { ...players[idx], ...playerPatch, updatedAt: Date.now() };
     localStorage.setItem(this.STORAGE_KEYS.PLAYERS, JSON.stringify(players));
 
     // Handle team change if teamId is provided
@@ -479,17 +541,18 @@ const AppDB = {
     }
 
     if (this.isFirebaseActive && this.firestore) {
-      await this.firestore.collection('players').doc(playerId).update(patchData);
+      await this.firestore.collection('players').doc(playerId).update(playerPatch);
     }
 
     this.notifyListeners('players');
     this.broadcast('players');
-    this.pushToCloud();
+    this.queueSync(['players', 'teams']);
     return players[idx];
   },
 
   // Update Team (Admin & Umpire can update team details, captain, VC anytime)
   async updateTeam(teamId, patchData) {
+    this.requireStaff();
     const teams = this.getLocalTeams();
     const idx = teams.findIndex(t => t.id === teamId);
     if (idx === -1) throw new Error('Team not found');
@@ -501,6 +564,7 @@ const AppDB = {
 
   // Add New Team
   async addTeam(teamName) {
+    this.requireStaff();
     const cleanName = (teamName || '').trim();
     if (!cleanName) throw new Error('Team name is required');
 
@@ -523,12 +587,14 @@ const AppDB = {
 
   // Delete Team (preserves players in the pool)
   async deleteTeam(teamId) {
+    this.requireStaff();
     const teams = this.getLocalTeams().filter(t => t.id !== teamId);
     await this.saveTeams(teams);
   },
 
   // Rename Team
   async renameTeam(teamId, newName) {
+    this.requireStaff();
     const cleanName = (newName || '').trim();
     if (!cleanName) throw new Error('Team name cannot be empty');
 
@@ -569,13 +635,14 @@ const AppDB = {
   },
 
   async saveTeams(teams) {
+    this.requireStaff();
     if (this.isFirebaseActive && this.firestore) {
       await this.firestore.collection('cfg').doc('teams').set({ list: teams, updatedAt: Date.now() });
     } else {
       localStorage.setItem(this.STORAGE_KEYS.TEAMS, JSON.stringify(teams));
       this.notifyListeners('teams');
       this.broadcast('teams');
-      this.pushToCloud();
+      this.queueSync(['teams']);
     }
   },
 
@@ -626,7 +693,7 @@ const AppDB = {
       localStorage.setItem(this.STORAGE_KEYS.MATCHES, JSON.stringify(matches));
       this.notifyListeners('matches');
       this.broadcast('matches');
-      this.pushToCloud();
+      this.queueSync(['matches']);
     }
 
     return newMatch;
@@ -648,7 +715,7 @@ const AppDB = {
         localStorage.setItem(this.STORAGE_KEYS.MATCHES, JSON.stringify(matches));
         this.notifyListeners('matches');
         this.broadcast('matches');
-        this.pushToCloud();
+        this.queueSync(['matches']);
       }
     }
   },
@@ -664,47 +731,93 @@ const AppDB = {
       localStorage.setItem(this.STORAGE_KEYS.MATCHES, JSON.stringify(matches));
       this.notifyListeners('matches');
       this.broadcast('matches');
-      this.pushToCloud();
+      this.queueSync(['matches']);
     }
   },
 
   // Authentication & Role Management (FR-23, FR-24, FR-25)
+  // Credentials are verified by the server (/api/login), which returns a signed,
+  // expiring token. /api/sync rejects writes without a valid token, so the checks
+  // below only drive the UI; they cannot grant write access on their own.
+  isSessionValid() {
+    const u = this.currentUser;
+    return Boolean(u && u.token && u.exp && Number(u.exp) > Date.now() &&
+      (u.role === 'umpire' || u.role === 'admin'));
+  },
+
+  getAuthToken() {
+    return this.isSessionValid() ? this.currentUser.token : null;
+  },
+
   isAdmin() {
-    return Boolean(this.currentUser && this.currentUser.role === 'admin');
+    return this.isSessionValid() && this.currentUser.role === 'admin';
   },
 
   isUmpire() {
-    return Boolean(this.currentUser && (this.currentUser.role === 'umpire' || this.currentUser.role === 'admin'));
+    return this.isSessionValid();
   },
 
   isStaff() {
     return this.isUmpire();
   },
 
+  requireStaff() {
+    if (!this.isStaff()) {
+      throw new Error('Unauthorized: please sign in as Umpire or Admin staff.');
+    }
+  },
+
+  // Server rejected our token (expired / invalid): drop the session, keep unsent changes
+  handleSessionExpired() {
+    if (!this.currentUser) return;
+    this.currentUser = null;
+    localStorage.removeItem(this.STORAGE_KEYS.AUTH);
+    this.notifyAuthListeners();
+  },
+
   async login(name, password, role = 'umpire') {
     const cleanName = (name || '').trim();
-    const cleanPass = (password || '').trim();
+    const cleanPass = password || '';
 
     if (!cleanName) {
       throw new Error('Please enter your name to sign in.');
     }
-
-    if (cleanPass !== 'sitare@2029') {
-      throw new Error('Incorrect password! Please check your credentials and try again.');
+    if (!cleanPass) {
+      throw new Error('Please enter the password.');
     }
 
-    const cleanRole = (role === 'admin') ? 'admin' : 'umpire';
+    let res;
+    try {
+      res = await fetch(this.CLOUD.LOGIN_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: cleanName, password: cleanPass, role: role === 'admin' ? 'admin' : 'umpire' })
+      });
+    } catch (err) {
+      throw new Error('Cannot reach the server to sign in. Check your connection and try again.');
+    }
+
+    let json = null;
+    try { json = await res.json(); } catch (e) {}
+
+    if (!res.ok || !json || !json.token) {
+      throw new Error((json && json.error) || 'Sign in failed. Please try again.');
+    }
 
     this.currentUser = {
-      name: cleanName,
-      displayName: cleanName,
-      email: cleanName.toLowerCase().replace(/\s+/g, '') + '@tournament.local',
-      role: cleanRole,
+      name: json.name || cleanName,
+      displayName: json.name || cleanName,
+      role: json.role,
+      token: json.token,
+      exp: json.exp,
       uid: 'user_' + Date.now()
     };
 
     localStorage.setItem(this.STORAGE_KEYS.AUTH, JSON.stringify(this.currentUser));
     this.notifyAuthListeners();
+
+    // Flush any unsent changes / seed an empty cloud now that we can write
+    this.pullFromCloud();
     return this.currentUser;
   },
 

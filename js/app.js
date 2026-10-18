@@ -14,6 +14,7 @@ const App = {
     await AppDB.init();
 
     // 2. Setup Event Listeners
+    this.setupActionDelegation();
     this.setupNavigation();
     this.setupTheme();
     this.setupPWA();
@@ -41,6 +42,36 @@ const App = {
       this.navigateTo(`view-${initialHash}`);
     } else {
       this.navigateTo('view-live');
+    }
+  },
+
+  // ==========================================
+  // DELEGATED ACTIONS (no inline JS in generated HTML)
+  // Buttons carry data-action + data-* values; values are read back from
+  // dataset, so names containing quotes/markup can never reach a JS context.
+  // ==========================================
+  setupActionDelegation() {
+    document.addEventListener('click', (e) => {
+      const el = e.target.closest('[data-action]');
+      if (!el) return;
+      this.dispatchAction(el.dataset);
+    });
+  },
+
+  dispatchAction(d) {
+    switch (d.action) {
+      case 'openAddTeam': return this.openAddTeamModal();
+      case 'openAddPlayer': return this.openAddPlayerModal(d.id || null);
+      case 'openEditTeam': return this.openEditTeamModal(d.id);
+      case 'deleteTeam': return this.confirmDeleteTeam(d.id, d.name);
+      case 'openEditPlayer': return this.openEditPlayerModal(d.id);
+      case 'movePlayer': return this.openMovePlayerModal(d.id, d.name);
+      case 'deletePlayer': return this.confirmDeletePlayer(d.id, d.name);
+      case 'navigate': return this.navigateTo(d.view);
+      case 'deleteMatch': return this.confirmDeleteMatch(d.id);
+      case 'scorecard': return this.openFullScorecardModal(d.id);
+      case 'toggleOver': return this.toggleOverHistory(d.target);
+      case 'share': return this.shareLiveMatch(d.id, d.teamA, d.teamB, d.score, d.overs);
     }
   },
 
@@ -269,7 +300,7 @@ const App = {
       });
     }
 
-    // Custom login form with Name and password sitare@2029
+    // Staff login form: credentials are verified server-side by /api/login
     const loginForm = document.getElementById('staff-login-form');
     if (loginForm) {
       loginForm.addEventListener('submit', async (e) => {
@@ -365,6 +396,12 @@ const App = {
         this.navigateTo('view-live');
       }
     }
+
+    // Controls that only staff may use (add team / add player)
+    const staffNow = AppDB.isStaff();
+    document.querySelectorAll('[data-staff-only]').forEach(el => {
+      el.style.display = staffNow ? '' : 'none';
+    });
 
     this.renderPlayersTable();
     this.renderTeamsView();
@@ -565,7 +602,12 @@ const App = {
 
         const targetIndex = targetTeamVal === 'unassigned' ? -1 : Number(targetTeamVal);
         TeamEngine.movePlayer(playerId, sourceIndex, targetIndex, teams);
-        await AppDB.saveTeams(teams);
+        try {
+          await AppDB.saveTeams(teams);
+        } catch (err) {
+          this.showToast(err.message, 'error');
+          return;
+        }
         this.closeModal('modal-move-player');
         this.showToast('Player reassigned successfully', 'success');
         this.renderTeamsView();
@@ -675,11 +717,11 @@ const App = {
     const teamPlayerList = (team.playerIds || []).map(pid => pMap[pid]).filter(Boolean);
     const optionsHtml = `
       <option value="">-- No Captain Selected --</option>
-      ${teamPlayerList.map(p => `<option value="${p.id}" ${p.id === team.captainId ? 'selected' : ''}>${this.escapeHtml(p.name)} (${p.role})</option>`).join('')}
+      ${teamPlayerList.map(p => `<option value="${this.escapeHtml(p.id)}" ${p.id === team.captainId ? 'selected' : ''}>${this.escapeHtml(p.name)} (${this.escapeHtml(p.role)})</option>`).join('')}
     `;
     const vcOptionsHtml = `
       <option value="">-- No Vice-Captain Selected --</option>
-      ${teamPlayerList.map(p => `<option value="${p.id}" ${p.id === team.viceCaptainId ? 'selected' : ''}>${this.escapeHtml(p.name)} (${p.role})</option>`).join('')}
+      ${teamPlayerList.map(p => `<option value="${this.escapeHtml(p.id)}" ${p.id === team.viceCaptainId ? 'selected' : ''}>${this.escapeHtml(p.name)} (${this.escapeHtml(p.role)})</option>`).join('')}
     `;
 
     if (capSelect) capSelect.innerHTML = optionsHtml;
@@ -689,10 +731,18 @@ const App = {
   },
 
   async confirmDeleteTeam(teamId, teamName) {
+    if (!AppDB.isStaff()) {
+      this.showToast('Staff/Admin login required to delete teams', 'error');
+      return;
+    }
     if (confirm(`Are you sure you want to delete team "${teamName}"? Players will be moved to the unassigned pool.`)) {
-      await AppDB.deleteTeam(teamId);
-      this.showToast(`Team "${teamName}" removed`, 'info');
-      this.renderTeamsView();
+      try {
+        await AppDB.deleteTeam(teamId);
+        this.showToast(`Team "${teamName}" removed`, 'info');
+        this.renderTeamsView();
+      } catch (err) {
+        this.showToast(err.message, 'error');
+      }
     }
   },
 
@@ -705,7 +755,7 @@ const App = {
     if (select) {
       select.innerHTML = `
         <option value="unassigned">-- Unassigned Pool --</option>
-        ${teams.map(t => `<option value="${t.id}" ${t.id === preselectedTeamId ? 'selected' : ''}>${this.escapeHtml(t.name)}</option>`).join('')}
+        ${teams.map(t => `<option value="${this.escapeHtml(t.id)}" ${t.id === preselectedTeamId ? 'selected' : ''}>${this.escapeHtml(t.name)}</option>`).join('')}
       `;
     }
 
@@ -758,7 +808,7 @@ const App = {
     if (teamSelect) {
       teamSelect.innerHTML = `
         <option value="unassigned" ${currentTeamId === 'unassigned' ? 'selected' : ''}>-- Unassigned Pool --</option>
-        ${teams.map(t => `<option value="${t.id}" ${t.id === currentTeamId ? 'selected' : ''}>${this.escapeHtml(t.name)}</option>`).join('')}
+        ${teams.map(t => `<option value="${this.escapeHtml(t.id)}" ${t.id === currentTeamId ? 'selected' : ''}>${this.escapeHtml(t.name)}</option>`).join('')}
       `;
     }
 
@@ -807,10 +857,8 @@ const App = {
           <div class="empty-icon">🛡️</div>
           <div class="empty-title">No teams created yet</div>
           <p style="margin-bottom: 12px;">Create custom teams or auto-balance from registered players.</p>
-          <div style="display: flex; gap: 8px; justify-content: center;">
-            <button class="btn-primary" onclick="App.openAddTeamModal()">➕ Add New Team</button>
-            <button class="btn-secondary" onclick="App.openAddPlayerModal()">👤 Add Player</button>
-          </div>
+          ${AppDB.isStaff() ? `<div style="display: flex; gap: 8px; justify-content: center;"><button class="btn-primary" data-action="openAddTeam">➕ Add New Team</button>
+            <button class="btn-secondary" data-action="openAddPlayer">👤 Add Player</button></div>` : ''}
         </div>
       `;
       if (unassignedCard) unassignedCard.style.display = 'none';
@@ -821,6 +869,7 @@ const App = {
     const assignedIds = new Set();
     teams.forEach(t => (t.playerIds || []).forEach(id => assignedIds.add(id)));
     const unassigned = players.filter(p => !assignedIds.has(p.id));
+    const isStaff = AppDB.isStaff();
 
     // Render team cards
     container.innerHTML = teams.map((team) => {
@@ -839,8 +888,8 @@ const App = {
             <div>
               <div style="display: flex; align-items: center; gap: 8px;">
                 <h3 style="font-size: 1.15rem; font-weight: 800;">${this.escapeHtml(team.name)}</h3>
-                <button class="icon-btn" style="width: 28px; height: 28px; min-height: 28px; font-size: 0.75rem;" onclick="App.openEditTeamModal('${team.id}')" title="Edit team leadership & details">✏️</button>
-                <button class="icon-btn" style="width: 28px; height: 28px; min-height: 28px; font-size: 0.75rem; color: var(--leather-red);" onclick="App.confirmDeleteTeam('${team.id}', '${this.escapeHtml(team.name)}')" title="Delete team">🗑️</button>
+                ${isStaff ? `<button class="icon-btn" style="width: 28px; height: 28px; min-height: 28px; font-size: 0.75rem;" data-action="openEditTeam" data-id="${this.escapeHtml(team.id)}" title="Edit team leadership & details">✏️</button>
+                <button class="icon-btn" style="width: 28px; height: 28px; min-height: 28px; font-size: 0.75rem; color: var(--leather-red);" data-action="deleteTeam" data-id="${this.escapeHtml(team.id)}" data-name="${this.escapeHtml(team.name)}" title="Delete team">🗑️</button>` : ''}
               </div>
               ${leadHtml}
               ${mottoHtml}
@@ -857,9 +906,9 @@ const App = {
             <div style="font-size: 0.72rem; color: var(--text-muted);">
               ${stats.roles.Batter} Bat • ${stats.roles.Bowler} Bowl • ${stats.roles['All-rounder']} AR • ${stats.keepers} WK
             </div>
-            <button class="btn-secondary" style="padding: 4px 10px; font-size: 0.75rem; min-height: 30px; border-color: var(--pitch-green); color: var(--pitch-green);" onclick="App.openAddPlayerModal('${team.id}')">
+            ${isStaff ? `<button class="btn-secondary" style="padding: 4px 10px; font-size: 0.75rem; min-height: 30px; border-color: var(--pitch-green); color: var(--pitch-green);" data-action="openAddPlayer" data-id="${this.escapeHtml(team.id)}">
               ➕ Add Player
-            </button>
+            </button>` : ''}
           </div>
 
           <div class="team-players-list">
@@ -876,13 +925,13 @@ const App = {
                     ${isCap ? '<span style="color: var(--gold-amber); font-weight: 800; font-size: 0.75rem; margin-left: 2px;">(C)</span>' : ''}
                     ${isVc ? '<span style="color: #60A5FA; font-weight: 800; font-size: 0.75rem; margin-left: 2px;">(VC)</span>' : ''}
                     <span style="font-size: 0.75rem; color: var(--text-muted); margin-left: 4px;">(${this.escapeHtml(p.roll)})</span>
-                    <span style="font-size: 0.75rem; color: var(--text-secondary); margin-left: 4px;">• ${p.role}${p.keeper ? ' 🧤' : ''}</span>
+                    <span style="font-size: 0.75rem; color: var(--text-secondary); margin-left: 4px;">• ${this.escapeHtml(p.role)}${p.keeper ? ' 🧤' : ''}</span>
                   </div>
                   <div style="display: flex; align-items: center; gap: 4px;">
                     <span class="chip-rating">⭐ ${r}</span>
-                    <button class="icon-btn" style="width: 28px; height: 28px; min-height: 28px; font-size: 0.75rem;" onclick="App.openEditPlayerModal('${p.id}')" title="Edit player details">✏️</button>
-                    <button class="icon-btn" style="width: 28px; height: 28px; min-height: 28px; font-size: 0.75rem;" onclick="App.openMovePlayerModal('${p.id}', '${this.escapeHtml(p.name)}')" title="Move to another team or unassign">⇄</button>
-                    <button class="icon-btn" style="width: 28px; height: 28px; min-height: 28px; font-size: 0.75rem; color: var(--leather-red);" onclick="App.confirmDeletePlayer('${p.id}', '${this.escapeHtml(p.name)}')" title="Delete player">✕</button>
+                    ${isStaff ? `<button class="icon-btn" style="width: 28px; height: 28px; min-height: 28px; font-size: 0.75rem;" data-action="openEditPlayer" data-id="${this.escapeHtml(p.id)}" title="Edit player details">✏️</button>
+                    <button class="icon-btn" style="width: 28px; height: 28px; min-height: 28px; font-size: 0.75rem;" data-action="movePlayer" data-id="${this.escapeHtml(p.id)}" data-name="${this.escapeHtml(p.name)}" title="Move to another team or unassign">⇄</button>
+                    <button class="icon-btn" style="width: 28px; height: 28px; min-height: 28px; font-size: 0.75rem; color: var(--leather-red);" data-action="deletePlayer" data-id="${this.escapeHtml(p.id)}" data-name="${this.escapeHtml(p.name)}" title="Delete player">✕</button>` : ''}
                   </div>
                 </div>
               `;
@@ -899,10 +948,10 @@ const App = {
         if (unassignedCount) unassignedCount.textContent = unassigned.length;
         unassignedChips.innerHTML = unassigned.map(p => `
           <div class="player-chip" style="display: inline-flex; width: auto;">
-            <span>${this.escapeHtml(p.name)} (${p.role})</span>
-            <button class="icon-btn" style="width: 26px; height: 26px; min-height: 26px; font-size: 0.7rem; margin-left: 6px;" onclick="App.openEditPlayerModal('${p.id}')" title="Edit player">✏️</button>
-            <button class="icon-btn" style="width: 26px; height: 26px; min-height: 26px; font-size: 0.7rem; margin-left: 4px;" onclick="App.openMovePlayerModal('${p.id}', '${this.escapeHtml(p.name)}')">➕ Assign</button>
-            <button class="icon-btn" style="width: 26px; height: 26px; min-height: 26px; font-size: 0.7rem; color: var(--leather-red); margin-left: 4px;" onclick="App.confirmDeletePlayer('${p.id}', '${this.escapeHtml(p.name)}')">✕</button>
+            <span>${this.escapeHtml(p.name)} (${this.escapeHtml(p.role)})</span>
+            ${isStaff ? `<button class="icon-btn" style="width: 26px; height: 26px; min-height: 26px; font-size: 0.7rem; margin-left: 6px;" data-action="openEditPlayer" data-id="${this.escapeHtml(p.id)}" title="Edit player">✏️</button>
+            <button class="icon-btn" style="width: 26px; height: 26px; min-height: 26px; font-size: 0.7rem; margin-left: 4px;" data-action="movePlayer" data-id="${this.escapeHtml(p.id)}" data-name="${this.escapeHtml(p.name)}">➕ Assign</button>
+            <button class="icon-btn" style="width: 26px; height: 26px; min-height: 26px; font-size: 0.7rem; color: var(--leather-red); margin-left: 4px;" data-action="deletePlayer" data-id="${this.escapeHtml(p.id)}" data-name="${this.escapeHtml(p.name)}">✕</button>` : ''}
           </div>
         `).join('');
       } else {
@@ -1227,7 +1276,7 @@ const App = {
     if (selectStriker) {
       selectStriker.innerHTML = availableBatters.map(pid => {
         const p = pMap[pid];
-        return `<option value="${pid}" ${pid === liveMatch.strikerId ? 'selected' : ''}>${p ? this.escapeHtml(p.name) : pid}</option>`;
+        return `<option value="${this.escapeHtml(pid)}" ${pid === liveMatch.strikerId ? 'selected' : ''}>${p ? this.escapeHtml(p.name) : this.escapeHtml(pid)}</option>`;
       }).join('');
       if (!liveMatch.strikerId && availableBatters.length > 0) {
         liveMatch.strikerId = availableBatters[0];
@@ -1238,7 +1287,7 @@ const App = {
     if (selectNonStriker) {
       selectNonStriker.innerHTML = availableBatters.map(pid => {
         const p = pMap[pid];
-        return `<option value="${pid}" ${pid === liveMatch.nonStrikerId ? 'selected' : ''}>${p ? this.escapeHtml(p.name) : pid}</option>`;
+        return `<option value="${this.escapeHtml(pid)}" ${pid === liveMatch.nonStrikerId ? 'selected' : ''}>${p ? this.escapeHtml(p.name) : this.escapeHtml(pid)}</option>`;
       }).join('');
       if (!liveMatch.nonStrikerId && availableBatters.length > 1) {
         liveMatch.nonStrikerId = availableBatters[1];
@@ -1250,7 +1299,7 @@ const App = {
     if (selectBowler) {
       selectBowler.innerHTML = bowlingPlayerIds.map(pid => {
         const p = pMap[pid];
-        return `<option value="${pid}" ${pid === liveMatch.bowlerId ? 'selected' : ''}>${p ? this.escapeHtml(p.name) : pid}</option>`;
+        return `<option value="${this.escapeHtml(pid)}" ${pid === liveMatch.bowlerId ? 'selected' : ''}>${p ? this.escapeHtml(p.name) : this.escapeHtml(pid)}</option>`;
       }).join('');
       if (!liveMatch.bowlerId && bowlingPlayerIds.length > 0) {
         liveMatch.bowlerId = bowlingPlayerIds[0];
@@ -1283,7 +1332,7 @@ const App = {
     if (overBallsContainer) {
       if (currentInningsStats.currentOverBalls.length > 0) {
         overBallsContainer.innerHTML = currentInningsStats.currentOverBalls.map(b => `
-          <div class="ball-badge ${b.type}">${b.text}</div>
+          <div class="ball-badge ${b.type}">${this.escapeHtml(b.text)}</div>
         `).join('');
       } else {
         overBallsContainer.innerHTML = `<span style="color: var(--text-muted); font-size: 0.8rem;">Ready for delivery 1</span>`;
@@ -1486,7 +1535,7 @@ const App = {
       selectElem.innerHTML = candidateIds.map(pid => {
         const p = pMap[pid];
         const isCurrent = (pid === currentId);
-        return `<option value="${pid}" ${isCurrent ? 'selected' : ''}>${p ? this.escapeHtml(p.name) : pid} ${isCurrent ? '(Currently At Crease)' : ''}</option>`;
+        return `<option value="${this.escapeHtml(pid)}" ${isCurrent ? 'selected' : ''}>${p ? this.escapeHtml(p.name) : this.escapeHtml(pid)} ${isCurrent ? '(Currently At Crease)' : ''}</option>`;
       }).join('');
     }
 
@@ -1577,7 +1626,7 @@ const App = {
       if (nextBatters.length > 0) {
         selectNext.innerHTML = nextBatters.map(pid => {
           const p = pMap[pid];
-          return `<option value="${pid}">${p ? this.escapeHtml(p.name) : pid}</option>`;
+          return `<option value="${this.escapeHtml(pid)}">${p ? this.escapeHtml(p.name) : this.escapeHtml(pid)}</option>`;
         }).join('');
       } else {
         selectNext.innerHTML = `<option value="none">-- All Out / No more batsmen --</option>`;
@@ -1922,7 +1971,7 @@ const App = {
                 </div>
               </div>
               <div class="balls-reel" style="gap: 5px; min-height: 32px; padding: 2px 0;">
-                ${over.balls.map(b => `<div class="ball-badge ${b.type}" title="${b.tooltip || ''}">${b.text}</div>`).join('')}
+                ${over.balls.map(b => `<div class="ball-badge ${b.type}" title="${this.escapeHtml(b.tooltip || '')}">${this.escapeHtml(b.text)}</div>`).join('')}
               </div>
             </div>
           `;
@@ -1976,8 +2025,8 @@ const App = {
           <div class="empty-title">No Match Currently Live</div>
           <p style="margin-bottom: 16px;">The tournament umpire will start live ball-by-ball scoring once players take the field.</p>
           <div style="display: flex; justify-content: center; gap: 8px;">
-            <button class="btn-primary" onclick="App.navigateTo('view-history')">View Match History</button>
-            <button class="btn-secondary" onclick="App.navigateTo('view-teams')">View Teams & Squads</button>
+            <button class="btn-primary" data-action="navigate" data-view="view-history">View Match History</button>
+            <button class="btn-secondary" data-action="navigate" data-view="view-teams">View Teams & Squads</button>
           </div>
         </div>
       `;
@@ -2048,7 +2097,7 @@ const App = {
               ${liveMatch.overs} Overs Match
             </div>
             ${isStaff ? `
-              <button class="btn-danger" style="padding: 2px 8px; min-height: 26px; font-size: 0.72rem;" onclick="App.confirmDeleteMatch('${liveMatch.id}')" title="Delete live match">
+              <button class="btn-danger" style="padding: 2px 8px; min-height: 26px; font-size: 0.72rem;" data-action="deleteMatch" data-id="${this.escapeHtml(liveMatch.id)}" title="Delete live match">
                 🗑️ Delete
               </button>
             ` : ''}
@@ -2120,13 +2169,13 @@ const App = {
         <div class="recent-balls-section">
           <div class="recent-balls-label">Recent Balls (Last 12)</div>
           <div class="balls-reel">
-            ${inStats.recentBalls.length > 0 ? inStats.recentBalls.map(b => `<div class="ball-badge ${b.type}" title="${b.tooltip || ''}">${b.text}</div>`).join('') : '<span style="color: var(--text-muted); font-size: 0.8rem;">No balls bowled yet in this innings</span>'}
+            ${inStats.recentBalls.length > 0 ? inStats.recentBalls.map(b => `<div class="ball-badge ${b.type}" title="${this.escapeHtml(b.tooltip || '')}">${this.escapeHtml(b.text)}</div>`).join('') : '<span style="color: var(--text-muted); font-size: 0.8rem;">No balls bowled yet in this innings</span>'}
           </div>
         </div>
 
         <!-- Over-by-Over History (anyone can see history of every over + dropped catches) -->
         <div class="over-history-section" style="margin-top: 14px; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 12px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; cursor: pointer;" onclick="App.toggleOverHistory('live-over-history')">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; cursor: pointer;" data-action="toggleOver" data-target="live-over-history">
             <span style="font-size: 0.88rem; font-weight: 800; color: var(--text-primary); display: flex; align-items: center; gap: 6px;">
               <span>📊 Over-by-Over History</span>
               <span class="overs-badge" style="font-size: 0.72rem; padding: 1px 6px;">${inStats.oversHistory.length} Overs</span>
@@ -2140,10 +2189,10 @@ const App = {
 
         <!-- Web Share Button (WhatsApp share) -->
         <div class="share-btn-wrap" style="margin-top: 14px;">
-          <button class="btn-share" onclick="App.shareLiveMatch('${liveMatch.id}', '${this.escapeHtml(liveMatch.teamA)}', '${this.escapeHtml(liveMatch.teamB)}', '${inStats.totalRuns}/${inStats.wickets}', '${inStats.oversFormatted}')">
+          <button class="btn-share" data-action="share" data-id="${this.escapeHtml(liveMatch.id)}" data-team-a="${this.escapeHtml(liveMatch.teamA)}" data-team-b="${this.escapeHtml(liveMatch.teamB)}" data-score="${inStats.totalRuns}/${inStats.wickets}" data-overs="${inStats.oversFormatted}">
             <span>📲 Share Live Score on WhatsApp</span>
           </button>
-          <button class="btn-secondary" onclick="App.openFullScorecardModal('${liveMatch.id}')">
+          <button class="btn-secondary" data-action="scorecard" data-id="${this.escapeHtml(liveMatch.id)}">
             📋 Full Scorecard
           </button>
         </div>
@@ -2296,12 +2345,12 @@ const App = {
         })()}
 
         <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-          <button class="btn-secondary" style="padding: 6px 14px; min-height: 38px; font-size: 0.8rem;" onclick="App.openFullScorecardModal('${match.id}')">
+          <button class="btn-secondary" style="padding: 6px 14px; min-height: 38px; font-size: 0.8rem;" data-action="scorecard" data-id="${this.escapeHtml(match.id)}">
             📋 Full Scorecard
           </button>
 
           ${(canDelete && showDelete) ? `
-            <button class="btn-danger" style="padding: 4px 10px; min-height: 34px; font-size: 0.75rem;" onclick="App.confirmDeleteMatch('${match.id}')">
+            <button class="btn-danger" style="padding: 4px 10px; min-height: 34px; font-size: 0.75rem;" data-action="deleteMatch" data-id="${this.escapeHtml(match.id)}">
               🗑️ Delete
             </button>
           ` : ''}
@@ -2316,7 +2365,12 @@ const App = {
       return;
     }
     if (confirm('Are you sure you want to delete this match record? This action cannot be undone.')) {
-      await AppDB.deleteMatch(matchId);
+      try {
+        await AppDB.deleteMatch(matchId);
+      } catch (err) {
+        this.showToast(err.message, 'error');
+        return;
+      }
       this.showToast('Match record deleted', 'info');
       this.renderHistoryView();
       this.renderLiveView();
@@ -2374,8 +2428,8 @@ const App = {
                 return `
                   <tr>
                     <td>
-                      <span class="player-name">${p ? this.escapeHtml(p.name) : b.id}</span>
-                      <span class="dismissal-note">${b.dismissal}</span>
+                      <span class="player-name">${p ? this.escapeHtml(p.name) : this.escapeHtml(b.id)}</span>
+                      <span class="dismissal-note">${this.escapeHtml(b.dismissal)}</span>
                     </td>
                     <td class="num-cell" style="font-weight: 700;">${b.runs}</td>
                     <td class="num-cell">${b.balls}</td>
@@ -2411,7 +2465,7 @@ const App = {
                 const p = pMap[bw.id];
                 return `
                   <tr>
-                    <td><span class="player-name">${p ? this.escapeHtml(p.name) : bw.id}</span></td>
+                    <td><span class="player-name">${p ? this.escapeHtml(p.name) : this.escapeHtml(bw.id)}</span></td>
                     <td class="num-cell">${bw.oversFormatted}</td>
                     <td class="num-cell">${bw.maidens}</td>
                     <td class="num-cell">${bw.runsConceded}</td>
@@ -2426,7 +2480,7 @@ const App = {
 
         <!-- Innings Over-by-Over History -->
         <div style="margin-top: 12px; background: var(--bg-surface-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 10px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" onclick="App.toggleOverHistory('scorecard-overs-${this.escapeHtml(teamBattingName).replace(/[^a-zA-Z0-9]/g, '_')}')">
+          <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" data-action="toggleOver" data-target="scorecard-overs-${this.escapeHtml(teamBattingName).replace(/[^a-zA-Z0-9]/g, '_')}">
             <span style="font-size: 0.82rem; font-weight: 700; color: var(--text-secondary);">
               📊 Over-by-Over Log & Dropped Catches (${repStats.oversHistory.length} Overs)
             </span>
@@ -2519,7 +2573,7 @@ const App = {
           <div style="font-size: 0.72rem; color: var(--text-muted);">${this.escapeHtml(s.roll)}</div>
         </td>
         <td>
-          <span style="font-size: 0.78rem; background: var(--bg-surface); padding: 2px 6px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">${s.role}</span>
+          <span style="font-size: 0.78rem; background: var(--bg-surface); padding: 2px 6px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">${this.escapeHtml(s.role)}</span>
         </td>
         <td class="num-cell" style="font-weight: 800; color: var(--gold-amber);">⭐ ${s.rating}</td>
         <td class="num-cell" style="font-weight: 700; color: var(--pitch-green);">${s.runs} <span style="font-size: 0.72rem; color: var(--text-muted);">(${s.balls})</span></td>
@@ -2530,11 +2584,11 @@ const App = {
         <td class="num-cell">${s.economy}</td>
         <td class="admin-only-col" style="${isStaff ? 'display: table-cell;' : 'display: none;'}">
           <div style="display: flex; gap: 4px; justify-content: flex-end;">
-            <button class="btn-secondary" style="padding: 2px 8px; min-height: 28px; font-size: 0.72rem; border-color: var(--gold-amber); color: var(--gold-amber);" onclick="App.openEditPlayerModal('${s.id}')" title="Edit player details">
+            <button class="btn-secondary" style="padding: 2px 8px; min-height: 28px; font-size: 0.72rem; border-color: var(--gold-amber); color: var(--gold-amber);" data-action="openEditPlayer" data-id="${this.escapeHtml(s.id)}" title="Edit player details">
               ✏️ Edit
             </button>
             ${isStaff ? `
-              <button class="btn-danger" style="padding: 2px 8px; min-height: 28px; font-size: 0.72rem;" onclick="App.confirmDeletePlayer('${s.id}', '${this.escapeHtml(s.name)}')" title="Delete player">
+              <button class="btn-danger" style="padding: 2px 8px; min-height: 28px; font-size: 0.72rem;" data-action="deletePlayer" data-id="${this.escapeHtml(s.id)}" data-name="${this.escapeHtml(s.name)}" title="Delete player">
                 ✕
               </button>
             ` : ''}
@@ -2551,10 +2605,14 @@ const App = {
       return;
     }
     if (confirm(`Are you sure you want to delete player ${playerName}? They will also be removed from teams.`)) {
-      await AppDB.deletePlayer(playerId);
-      this.showToast(`Player ${playerName} deleted`, 'info');
-      this.renderPlayersTable();
-      this.renderTeamsView();
+      try {
+        await AppDB.deletePlayer(playerId);
+        this.showToast(`Player ${playerName} deleted`, 'info');
+        this.renderPlayersTable();
+        this.renderTeamsView();
+      } catch (err) {
+        this.showToast(err.message, 'error');
+      }
     }
   },
 

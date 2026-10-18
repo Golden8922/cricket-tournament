@@ -4,7 +4,7 @@
   "description": "[![Live on Vercel](https://img.shields.io/badge/Vercel-Live_App-black?logo=vercel)](https://sitarekcirc.vercel.app) [![GitHub Repository](https://img.shields.io/badge/GitHub-Golden8922%2Fcricket--tournament-blue?logo=github)](https://github.com/Golden8922/cricket-tournament)",
   "main": "sw.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test test/*.test.js"
   },
   "repository": {
     "type": "git",

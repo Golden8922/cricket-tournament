@@ -1,4 +1,4 @@
-const CACHE_NAME = 'college-cricket-v1';
+const CACHE_NAME = 'college-cricket-v2';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -33,6 +33,11 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
+
+  // Never intercept writes or the live-data API: they must always hit the network
+  if (event.request.method !== 'GET' || url.pathname.startsWith('/api/')) {
+    return;
+  }
 
   // For Firebase or external APIs, network first with fallback
   if (url.origin !== location.origin) {
