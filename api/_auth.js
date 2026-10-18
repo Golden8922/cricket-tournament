@@ -4,10 +4,16 @@ const crypto = require('crypto');
 
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24h: one tournament day, then sign in again
 
+// Used only when STAFF_PASSWORD is not configured in Vercel. Set STAFF_PASSWORD to override it.
+const LEGACY_PASSWORD = 'sitare@2029';
+
 function getSecret() {
-  // AUTH_SECRET is preferred; the Blob token already exists on every deployment
-  // and is never sent to the browser, so it is a safe fallback signing key.
-  return process.env.AUTH_SECRET || process.env.BLOB_READ_WRITE_TOKEN || '';
+  // AUTH_SECRET is preferred; the Blob token is never sent to the browser, so it is a
+  // safe fallback signing key. As a last resort derive a key from the staff password so
+  // login never fails just because neither variable is visible to this function.
+  const configured = process.env.AUTH_SECRET || process.env.BLOB_READ_WRITE_TOKEN;
+  if (configured) return configured;
+  return 'cct-session-key:' + (process.env.STAFF_PASSWORD || LEGACY_PASSWORD);
 }
 
 function b64url(input) {
@@ -54,4 +60,4 @@ function getBearerToken(req) {
   return m ? m[1].trim() : null;
 }
 
-module.exports = { signToken, verifyToken, getBearerToken, safeEqual, getSecret };
+module.exports = { signToken, verifyToken, getBearerToken, safeEqual, getSecret, LEGACY_PASSWORD };

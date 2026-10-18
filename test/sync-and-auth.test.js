@@ -77,6 +77,25 @@ test('umpire password cannot sign in as admin', async () => {
   assert.equal(res.statusCode, 401);
 });
 
+test('login still works when no signing secret or blob token is visible to the function', async () => {
+  const saved = { s: process.env.STAFF_PASSWORD, a: process.env.ADMIN_PASSWORD, k: process.env.AUTH_SECRET, b: process.env.BLOB_READ_WRITE_TOKEN };
+  delete process.env.STAFF_PASSWORD;
+  delete process.env.ADMIN_PASSWORD;
+  delete process.env.AUTH_SECRET;
+  delete process.env.BLOB_READ_WRITE_TOKEN;
+  try {
+    const res = await call(login, { method: 'POST', body: { name: 'x', password: 'sitare@2029', role: 'umpire' } });
+    assert.equal(res.statusCode, 200);
+    const sync1 = await call(sync, { method: 'POST', headers: { authorization: `Bearer ${res.body.token}` }, body: { sections: { teams: [{ id: 't9' }] } } });
+    assert.equal(sync1.statusCode, 200, 'token from login is accepted by sync');
+  } finally {
+    process.env.STAFF_PASSWORD = saved.s;
+    process.env.ADMIN_PASSWORD = saved.a;
+    process.env.AUTH_SECRET = saved.k;
+    if (saved.b !== undefined) process.env.BLOB_READ_WRITE_TOKEN = saved.b;
+  }
+});
+
 test('without STAFF_PASSWORD the legacy password works and others are rejected', async () => {
   const saved = { s: process.env.STAFF_PASSWORD, a: process.env.ADMIN_PASSWORD };
   delete process.env.STAFF_PASSWORD;

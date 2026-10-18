@@ -2,10 +2,7 @@
 //   STAFF_PASSWORD  - umpire password (falls back to LEGACY_PASSWORD below if unset)
 //   ADMIN_PASSWORD  - optional; admin password (defaults to STAFF_PASSWORD)
 //   AUTH_SECRET     - optional; token signing key (defaults to BLOB_READ_WRITE_TOKEN)
-const { signToken, safeEqual, getSecret } = require('./_auth');
-
-// Used only when STAFF_PASSWORD is not configured in Vercel. Set STAFF_PASSWORD to override it.
-const LEGACY_PASSWORD = 'sitare@2029';
+const { signToken, safeEqual, getSecret, LEGACY_PASSWORD } = require('./_auth');
 
 const sleep =(ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
