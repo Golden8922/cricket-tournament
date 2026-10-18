@@ -41,14 +41,14 @@ Then open `http://localhost:8080` in your phone or browser.
 | **Match Umpire** | Score balls, undo mistakes, finish matches, edit teams and players | Tap **Staff Login** → name, **⚡ Match Umpire**, umpire password |
 | **Tournament Admin** | Same as umpire, with its own password | Tap **Staff Login** → name, **👑 Tournament Admin**, admin password |
 
-Passwords are **not** stored in the code or this repo. They are checked on the server (`/api/login`), which returns a signed token that expires after 24 hours. The data API (`/api/sync`) rejects every write that does not carry a valid token, so only signed-in staff can change tournament data.
+Passwords are checked on the server (`/api/login`), which returns a signed token that expires after 24 hours. The data API (`/api/sync`) rejects every write that does not carry a valid token, so only signed-in staff can change tournament data.
 
 ### Required Vercel environment variables
 
 | Variable | Required | Purpose |
 | :--- | :--- | :--- |
 | `BLOB_READ_WRITE_TOKEN` | yes | Added automatically when a Vercel Blob store is connected |
-| `STAFF_PASSWORD` | **yes** | Umpire password. Without it nobody can sign in (login fails closed) |
+| `STAFF_PASSWORD` | recommended | Umpire password. If unset, the server falls back to the legacy password in `api/login.js`. Set it to change the password |
 | `ADMIN_PASSWORD` | no | Admin password (defaults to `STAFF_PASSWORD`) |
 | `AUTH_SECRET` | no | Token signing key (defaults to `BLOB_READ_WRITE_TOKEN`) |
 

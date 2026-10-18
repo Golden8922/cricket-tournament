@@ -1,10 +1,13 @@
-// Staff login. Passwords live only in server environment variables:
-//   STAFF_PASSWORD  - required; umpire password
+// Staff login. Passwords are checked on the server only:
+//   STAFF_PASSWORD  - umpire password (falls back to LEGACY_PASSWORD below if unset)
 //   ADMIN_PASSWORD  - optional; admin password (defaults to STAFF_PASSWORD)
 //   AUTH_SECRET     - optional; token signing key (defaults to BLOB_READ_WRITE_TOKEN)
 const { signToken, safeEqual, getSecret } = require('./_auth');
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// Used only when STAFF_PASSWORD is not configured in Vercel. Set STAFF_PASSWORD to override it.
+const LEGACY_PASSWORD = 'sitare@2029';
+
+const sleep =(ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 module.exports = async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
@@ -13,10 +16,10 @@ module.exports = async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const staffPassword = process.env.STAFF_PASSWORD;
+  const staffPassword = process.env.STAFF_PASSWORD || LEGACY_PASSWORD;
   const adminPassword = process.env.ADMIN_PASSWORD || staffPassword;
-  if (!staffPassword || !getSecret()) {
-    console.error('Auth is not configured: set STAFF_PASSWORD (and optionally ADMIN_PASSWORD / AUTH_SECRET)');
+  if (!getSecret()) {
+    console.error('Auth is not configured: no AUTH_SECRET or BLOB_READ_WRITE_TOKEN to sign sessions with');
     return res.status(500).json({ error: 'Server login is not configured yet. Ask the tournament admin.' });
   }
 

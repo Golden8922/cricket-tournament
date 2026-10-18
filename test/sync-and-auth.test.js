@@ -66,7 +66,7 @@ async function signIn(role = 'umpire') {
   return res.body.token;
 }
 
-test('login rejects a wrong password and the old hardcoded one', async () => {
+test('login rejects a wrong password, and the legacy one when STAFF_PASSWORD is set', async () => {
   const bad = await call(login, { method: 'POST', body: { name: 'x', password: 'sitare@2029', role: 'umpire' } });
   assert.equal(bad.statusCode, 401);
   assert.equal(bad.body.token, undefined);
@@ -77,14 +77,21 @@ test('umpire password cannot sign in as admin', async () => {
   assert.equal(res.statusCode, 401);
 });
 
-test('login fails closed when the server is not configured', async () => {
-  const saved = process.env.STAFF_PASSWORD;
+test('without STAFF_PASSWORD the legacy password works and others are rejected', async () => {
+  const saved = { s: process.env.STAFF_PASSWORD, a: process.env.ADMIN_PASSWORD };
   delete process.env.STAFF_PASSWORD;
+  delete process.env.ADMIN_PASSWORD;
   try {
-    const res = await call(login, { method: 'POST', body: { name: 'x', password: 'anything', role: 'umpire' } });
-    assert.equal(res.statusCode, 500);
+    const good = await call(login, { method: 'POST', body: { name: 'x', password: 'sitare@2029', role: 'umpire' } });
+    assert.equal(good.statusCode, 200);
+    assert.ok(good.body.token);
+    const admin = await call(login, { method: 'POST', body: { name: 'x', password: 'sitare@2029', role: 'admin' } });
+    assert.equal(admin.statusCode, 200);
+    const bad = await call(login, { method: 'POST', body: { name: 'x', password: 'anything', role: 'umpire' } });
+    assert.equal(bad.statusCode, 401);
   } finally {
-    process.env.STAFF_PASSWORD = saved;
+    process.env.STAFF_PASSWORD = saved.s;
+    process.env.ADMIN_PASSWORD = saved.a;
   }
 });
 
