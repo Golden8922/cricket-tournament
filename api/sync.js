@@ -4,6 +4,7 @@ const { verifyToken, getBearerToken } = require('./_auth');
 const BLOB_FILENAME = 'tournament_state.json';
 const SECTIONS = ['players', 'teams', 'matches'];
 const MAX_BODY_BYTES = 3.5 * 1024 * 1024; // Vercel functions accept ~4.5 MB bodies
+const MAX_DELETED_IDS = 500;
 
 async function readCurrentState() {
   const { blobs } = await list({ prefix: BLOB_FILENAME });
@@ -22,6 +23,25 @@ function isValidSection(items) {
     (item) => item && typeof item === 'object' && !Array.isArray(item) &&
       typeof item.id === 'string' && item.id.length > 0 && item.id.length <= 120
   );
+}
+
+function isValidIdList(ids) {
+  return Array.isArray(ids) && ids.length <= MAX_DELETED_IDS &&
+    ids.every((id) => typeof id === 'string' && id.length > 0 && id.length <= 120);
+}
+
+// Matches are merged by id (the newest copy of each match wins) so one device can never
+// drop matches that another device saved. Deleted ids are remembered so deletions stick.
+function mergeMatches(currentList, incomingList, deletedIds) {
+  const byId = new Map();
+  [...currentList, ...incomingList].forEach((match) => {
+    if (!match || !match.id || deletedIds.has(match.id)) return;
+    const previous = byId.get(match.id);
+    if (!previous || Number(match.updatedAt || 0) >= Number(previous.updatedAt || 0)) {
+      byId.set(match.id, match);
+    }
+  });
+  return [...byId.values()].sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
 }
 
 module.exports = async function handler(req, res) {
@@ -52,30 +72,44 @@ module.exports = async function handler(req, res) {
       if (typeof payload === 'string') {
         try { payload = JSON.parse(payload); } catch (e) { payload = null; }
       }
-      if (!payload || typeof payload !== 'object' || !payload.sections || typeof payload.sections !== 'object') {
-        return res.status(400).json({ error: 'Expected { sections: { players?, teams?, matches? } }' });
+      if (!payload || typeof payload !== 'object') {
+        return res.status(400).json({ error: 'Expected { sections: {...}, deleted?: { matches: [ids] } }' });
       }
 
+      const sections = payload.sections && typeof payload.sections === 'object' ? payload.sections : {};
       const incoming = {};
-      for (const key of Object.keys(payload.sections)) {
+      for (const key of Object.keys(sections)) {
         if (!SECTIONS.includes(key)) {
           return res.status(400).json({ error: `Unknown section "${key}"` });
         }
-        if (!isValidSection(payload.sections[key])) {
+        if (!isValidSection(sections[key])) {
           return res.status(400).json({ error: `Invalid "${key}" data` });
         }
-        incoming[key] = payload.sections[key];
-      }
-      if (Object.keys(incoming).length === 0) {
-        return res.status(400).json({ error: 'No sections provided' });
+        incoming[key] = sections[key];
       }
 
-      // Merge only the sections sent by this client into the latest stored state, so a
-      // scorer pushing "matches" never overwrites squad edits made on another device.
+      const deletedMatches = payload.deleted && payload.deleted.matches !== undefined ? payload.deleted.matches : [];
+      if (!isValidIdList(deletedMatches)) {
+        return res.status(400).json({ error: 'Invalid deleted matches list' });
+      }
+
+      if (Object.keys(incoming).length === 0 && deletedMatches.length === 0) {
+        return res.status(400).json({ error: 'Nothing to save' });
+      }
+
+      // Merge into the latest stored state so a scorer pushing "matches" never overwrites
+      // squad edits made on another device (and vice versa).
       const current = await readCurrentState();
       const base = (current && current.data) || {};
       const merged = {};
       SECTIONS.forEach((key) => { merged[key] = incoming[key] || base[key] || []; });
+
+      const deletedIds = new Set([...(base.deletedMatchIds || []), ...deletedMatches]);
+      merged.deletedMatchIds = [...deletedIds].slice(-MAX_DELETED_IDS);
+      const matchesTouched = Boolean(incoming.matches) || deletedMatches.length > 0;
+      if (matchesTouched) {
+        merged.matches = mergeMatches(base.matches || [], incoming.matches || [], deletedIds);
+      }
 
       // Server-assigned, strictly increasing version (client clocks are not trusted)
       merged.updatedAt = Math.max(Date.now(), Number(base.updatedAt || 0) + 1);
@@ -93,9 +127,9 @@ module.exports = async function handler(req, res) {
         cacheControlMaxAge: 60
       });
 
-      // Return the sections the client did NOT send so it can pick up other devices' edits
-      const others = { updatedAt: merged.updatedAt };
-      SECTIONS.forEach((key) => { if (!incoming[key]) others[key] = merged[key]; });
+      // Return what the client may not have: sections it did not send, plus the merged matches
+      const others = { updatedAt: merged.updatedAt, deletedMatchIds: merged.deletedMatchIds };
+      SECTIONS.forEach((key) => { if (!incoming[key] || key === 'matches') others[key] = merged[key]; });
       return res.status(200).json({ status: 'ok', updatedAt: merged.updatedAt, data: others });
     }
 

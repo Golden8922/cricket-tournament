@@ -11,7 +11,8 @@ const AppDB = {
     AUTH: 'cct_auth_user',
     FIREBASE_CONFIG: 'cct_firebase_config',
     LAST_SYNC: 'cct_last_synced_at',
-    DIRTY: 'cct_dirty_sections'
+    DIRTY: 'cct_dirty_sections',
+    PENDING_DELETED_MATCHES: 'cct_pending_deleted_matches'
   },
 
   // Sections of the shared state that are synced independently
@@ -172,6 +173,27 @@ const AppDB = {
     } catch (e) {}
   },
 
+  // Ids of matches deleted here that the server has not been told about yet
+  getPendingDeletedMatches() {
+    try {
+      const arr = JSON.parse(localStorage.getItem(this.STORAGE_KEYS.PENDING_DELETED_MATCHES) || '[]');
+      return Array.isArray(arr) ? arr.filter(id => typeof id === 'string') : [];
+    } catch (e) {
+      return [];
+    }
+  },
+
+  setPendingDeletedMatches(ids) {
+    try {
+      if (ids.length === 0) localStorage.removeItem(this.STORAGE_KEYS.PENDING_DELETED_MATCHES);
+      else localStorage.setItem(this.STORAGE_KEYS.PENDING_DELETED_MATCHES, JSON.stringify(ids));
+    } catch (e) {}
+  },
+
+  hasUnsentChanges() {
+    return this.getDirty().length > 0 || this.getPendingDeletedMatches().length > 0;
+  },
+
   markDirty(sections) {
     const set = new Set(this.getDirty());
     sections.forEach(s => { if (this.SECTIONS.includes(s)) set.add(s); });
@@ -198,7 +220,8 @@ const AppDB = {
 
     const token = this.getAuthToken();
     const dirty = this.getDirty();
-    if (!token || dirty.length === 0) return;
+    const pendingDeleted = this.getPendingDeletedMatches();
+    if (!token || (dirty.length === 0 && pendingDeleted.length === 0)) return;
 
     const sections = {};
     dirty.forEach(s => { sections[s] = this.getLocalSection(s); });
@@ -211,7 +234,7 @@ const AppDB = {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`
           },
-          body: JSON.stringify({ sections })
+          body: JSON.stringify({ sections, deleted: { matches: pendingDeleted } })
         });
 
         if (res.ok) {
@@ -221,6 +244,7 @@ const AppDB = {
             !dirty.includes(s) || JSON.stringify(this.getLocalSection(s)) !== JSON.stringify(sections[s])
           );
           this.setDirty(stillDirty);
+          this.setPendingDeletedMatches(this.getPendingDeletedMatches().filter(id => !pendingDeleted.includes(id)));
           if (json && json.data) this.applyRemote(json.data);
           this.setConnectionStatus('online');
         } else if (res.status === 401) {
@@ -246,61 +270,81 @@ const AppDB = {
     })();
   },
 
-  // Apply a remote snapshot to local storage, never touching sections with unsent local edits
-  applyRemote(remoteData) {
-    if (!remoteData || !remoteData.updatedAt) return;
+  // Merge remote matches into local ones by match id (newest copy wins). Matches that exist
+  // only on this device are kept and queued for upload, and deletions are applied via the
+  // server's deleted-id list, so a pull can never silently drop a locally scored match.
+  mergeMatchesFrom(remoteData) {
+    const remoteMatches = Array.isArray(remoteData.matches) ? remoteData.matches : [];
+    const pending = new Set(this.getPendingDeletedMatches());
+    const deleted = new Set([...(remoteData.deletedMatchIds || []), ...pending]);
 
-    const localSyncedAt = Number(localStorage.getItem(this.STORAGE_KEYS.LAST_SYNC) || 0);
-    if (remoteData.updatedAt <= localSyncedAt) return;
-    localStorage.setItem(this.STORAGE_KEYS.LAST_SYNC, String(remoteData.updatedAt));
+    const byId = new Map();
+    remoteMatches.forEach(m => {
+      if (m && m.id && !deleted.has(m.id)) byId.set(m.id, m);
+    });
 
-    const dirty = this.getDirty();
-    const changed = [];
-
-    this.SECTIONS.forEach(section => {
-      if (dirty.includes(section)) return;
-      const incoming = remoteData[section];
-      if (!Array.isArray(incoming)) return;
-      // Never replace squads with an empty list
-      if (incoming.length === 0 && section !== 'matches') return;
-
-      const key = this.STORAGE_KEYS[section.toUpperCase()];
-      const next = JSON.stringify(incoming);
-      if (localStorage.getItem(key) !== next) {
-        localStorage.setItem(key, next);
-        changed.push(section);
+    let localOnly = false;
+    this.getLocalMatches().forEach(m => {
+      if (!m || !m.id || deleted.has(m.id)) return;
+      const remote = byId.get(m.id);
+      if (!remote) {
+        byId.set(m.id, m);
+        localOnly = true;
+      } else if (Number(m.updatedAt || 0) > Number(remote.updatedAt || 0)) {
+        byId.set(m.id, m);
       }
     });
 
-    changed.forEach(section => this.notifyListeners(section));
-    if (changed.length > 0) this.broadcast('cloud_sync');
+    const merged = [...byId.values()].sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
+    const next = JSON.stringify(merged);
+    let changed = false;
+    if (localStorage.getItem(this.STORAGE_KEYS.MATCHES) !== next) {
+      localStorage.setItem(this.STORAGE_KEYS.MATCHES, next);
+      changed = true;
+    }
+    if (localOnly) this.markDirty(['matches']);
+    return changed;
   },
 
-  // One-time recovery per device: matches that were scored here by an older version
-  // but never reached the cloud are merged in and pushed once staff sign in.
-  migrateLocalMatches(remote) {
-    const FLAG = 'cct_matches_migrated_v2';
-    if (!this.getAuthToken() || localStorage.getItem(FLAG)) return;
-    localStorage.setItem(FLAG, '1');
+  // Apply a remote snapshot to local storage
+  applyRemote(remoteData) {
+    if (!remoteData || !remoteData.updatedAt) return;
+    const changed = [];
 
-    const remoteMatches = Array.isArray(remote.matches) ? remote.matches : [];
-    const remoteIds = new Set(remoteMatches.map(m => m && m.id));
-    const missing = this.getLocalMatches().filter(m => m && m.id && !remoteIds.has(m.id));
-    if (missing.length === 0) return;
+    if (Array.isArray(remoteData.matches) && this.mergeMatchesFrom(remoteData)) {
+      changed.push('matches');
+    }
 
-    const merged = [...missing, ...remoteMatches].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-    localStorage.setItem(this.STORAGE_KEYS.MATCHES, JSON.stringify(merged));
-    this.markDirty(['matches']);
-    this.notifyListeners('matches');
-    this.broadcast('matches');
-    this.pushToCloud();
+    // Players and teams: replace with the newer remote copy unless there are unsent local edits
+    const localSyncedAt = Number(localStorage.getItem(this.STORAGE_KEYS.LAST_SYNC) || 0);
+    if (remoteData.updatedAt > localSyncedAt) {
+      localStorage.setItem(this.STORAGE_KEYS.LAST_SYNC, String(remoteData.updatedAt));
+      const dirty = this.getDirty();
+
+      ['players', 'teams'].forEach(section => {
+        if (dirty.includes(section)) return;
+        const incoming = remoteData[section];
+        // Never replace squads with an empty list
+        if (!Array.isArray(incoming) || incoming.length === 0) return;
+
+        const key = this.STORAGE_KEYS[section.toUpperCase()];
+        const next = JSON.stringify(incoming);
+        if (localStorage.getItem(key) !== next) {
+          localStorage.setItem(key, next);
+          changed.push(section);
+        }
+      });
+    }
+
+    changed.forEach(section => this.notifyListeners(section));
+    if (changed.length > 0) this.broadcast('cloud_sync');
   },
 
   async pullFromCloud() {
     if (this._isPulling || this._cloudPushPromise) return;
 
     // Retry any unsent local changes first
-    if (this.getDirty().length > 0 && this.getAuthToken() && Date.now() >= this._pushRetryAt) {
+    if (this.hasUnsentChanges() && this.getAuthToken() && Date.now() >= this._pushRetryAt) {
       this.pushToCloud();
       return;
     }
@@ -344,9 +388,11 @@ const AppDB = {
         return;
       }
 
-      this.migrateLocalMatches(remoteData);
       this.applyRemote(remoteData);
       this.setConnectionStatus('online');
+
+      // Anything found only on this device (or still unsent) goes up as soon as staff are signed in
+      if (this.hasUnsentChanges() && this.getAuthToken()) this.pushToCloud();
     } catch (err) {
       console.warn('Cloud pull error:', err.message);
     } finally {
@@ -752,6 +798,7 @@ const AppDB = {
     } else {
       const matches = this.getLocalMatches().filter(m => m.id !== matchId);
       localStorage.setItem(this.STORAGE_KEYS.MATCHES, JSON.stringify(matches));
+      this.setPendingDeletedMatches([...new Set([...this.getPendingDeletedMatches(), matchId])]);
       this.notifyListeners('matches');
       this.broadcast('matches');
       this.queueSync(['matches']);

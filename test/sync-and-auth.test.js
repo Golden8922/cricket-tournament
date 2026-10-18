@@ -142,7 +142,7 @@ test('sync POST validates shape and merges only the sent sections', async () => 
   assert.equal(second.statusCode, 200);
   assert.ok(second.body.updatedAt > first.body.updatedAt, 'server version must increase');
   assert.deepEqual(second.body.data.players, [{ id: 'p1' }], 'other sections are returned to the client');
-  assert.equal(second.body.data.matches, undefined, 'own section is not echoed back');
+  assert.deepEqual(second.body.data.matches, [{ id: 'm1' }], 'merged matches are returned so the client can adopt them');
 
   const stored = JSON.parse(blobStore.body);
   assert.deepEqual(stored.players, [{ id: 'p1' }]);
@@ -150,6 +150,32 @@ test('sync POST validates shape and merges only the sent sections', async () => 
 
   const get = await call(sync, { method: 'GET' });
   assert.equal(get.body.status, 'ok');
+});
+
+test('sync merges matches by id and remembers deletions', async () => {
+  const token = await signIn();
+  const headers = { authorization: `Bearer ${token}` };
+  const t0 = Date.now();
+
+  await call(sync, { method: 'POST', headers, body: { sections: { matches: [{ id: 'a', createdAt: 1, updatedAt: t0 }, { id: 'b', createdAt: 2, updatedAt: t0 }] } } });
+  // a second device that only knows match "c" must not drop a and b
+  const res = await call(sync, { method: 'POST', headers, body: { sections: { matches: [{ id: 'c', createdAt: 3, updatedAt: t0 }] } } });
+  const ids = res.body.data.matches.map((m) => m.id);
+  ['a', 'b', 'c'].forEach((id) => assert.ok(ids.includes(id), `match ${id} kept`));
+
+  // newest copy of a match wins
+  const upd = await call(sync, { method: 'POST', headers, body: { sections: { matches: [{ id: 'a', createdAt: 1, updatedAt: t0 + 5, result: 'new' }] } } });
+  assert.equal(upd.body.data.matches.find((m) => m.id === 'a').result, 'new');
+  const stale = await call(sync, { method: 'POST', headers, body: { sections: { matches: [{ id: 'a', createdAt: 1, updatedAt: t0 - 5, result: 'old' }] } } });
+  assert.equal(stale.body.data.matches.find((m) => m.id === 'a').result, 'new');
+
+  // deletions stick even if a stale device re-sends the match
+  const del = await call(sync, { method: 'POST', headers, body: { sections: {}, deleted: { matches: ['b'] } } });
+  assert.equal(del.statusCode, 200);
+  const resend = await call(sync, { method: 'POST', headers, body: { sections: { matches: [{ id: 'b', createdAt: 2, updatedAt: t0 + 99 }] } } });
+  assert.ok(!resend.body.data.matches.some((m) => m.id === 'b'));
+
+  assert.equal((await call(sync, { method: 'POST', headers, body: { sections: {}, deleted: { matches: 'nope' } } })).statusCode, 400);
 });
 
 test('sync GET reports "empty" only when nothing is stored', async () => {
@@ -233,14 +259,43 @@ test('an explicitly empty cloud is only seeded by signed-in staff', async () => 
   assert.equal(sent[0].headers.Authorization, 'Bearer t');
 });
 
-test('a pull never overwrites sections with unsent local edits', async () => {
-  const remote = { updatedAt: 100, players: [{ id: 'rp' }], teams: [{ id: 'rt' }], matches: [{ id: 'remote-match' }] };
+test('a pull merges matches by id and never drops a local match', async () => {
+  const remote = { updatedAt: 100, players: [{ id: 'rp' }], teams: [{ id: 'rt' }], matches: [{ id: 'remote-match', createdAt: 1 }] };
   const { db, storage } = loadDb({ token: false, fetchImpl: async () => ok(remote) });
-  storage.set('cct_matches', JSON.stringify([{ id: 'local-live-match' }]));
-  db.markDirty(['matches']);
+  storage.set('cct_matches', JSON.stringify([{ id: 'local-live-match', createdAt: 2 }]));
   await db.pullFromCloud();
-  assert.deepEqual(JSON.parse(storage.get('cct_matches')), [{ id: 'local-live-match' }]);
+  const ids = JSON.parse(storage.get('cct_matches')).map((m) => m.id).sort();
+  assert.deepEqual(ids, ['local-live-match', 'remote-match']);
   assert.deepEqual(JSON.parse(storage.get('cct_players')), [{ id: 'rp' }]);
+  assert.deepEqual(db.getDirty(), ['matches'], 'the local-only match is queued for upload');
+});
+
+test('a pull does not overwrite players/teams that have unsent local edits', async () => {
+  const remote = { updatedAt: 100, players: [{ id: 'rp' }], teams: [{ id: 'rt' }], matches: [] };
+  const { db, storage } = loadDb({ token: false, fetchImpl: async () => ok(remote) });
+  storage.set('cct_teams', JSON.stringify([{ id: 'my-edit' }]));
+  db.markDirty(['teams']);
+  await db.pullFromCloud();
+  assert.deepEqual(JSON.parse(storage.get('cct_teams')), [{ id: 'my-edit' }]);
+  assert.deepEqual(JSON.parse(storage.get('cct_players')), [{ id: 'rp' }]);
+});
+
+test('deleting a match sends its id so it is not resurrected by merging', async () => {
+  const { db, storage, calls } = loadDb({
+    fetchImpl: async (u, o) => (o.method === 'POST'
+      ? ok({ status: 'ok', updatedAt: 9, data: { updatedAt: 9, matches: [], deletedMatchIds: ['m_gone'] } })
+      : ok({ updatedAt: 10, players: [], teams: [], matches: [{ id: 'm_gone', createdAt: 1 }], deletedMatchIds: ['m_gone'] }))
+  });
+  storage.set('cct_matches', JSON.stringify([{ id: 'm_gone', createdAt: 1 }]));
+  await db.deleteMatch('m_gone');
+  await new Promise((r) => setTimeout(r, 10));
+  const sent = posts(calls);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(JSON.parse(sent[0].body).deleted.matches, ['m_gone']);
+  assert.deepEqual(db.getPendingDeletedMatches(), [], 'cleared after the server confirmed');
+
+  await db.pullFromCloud(); // remote still lists the match, but its deleted-id list wins
+  assert.deepEqual(JSON.parse(storage.get('cct_matches') || '[]'), []);
 });
 
 test('failed pushes stay dirty and are retried; success clears them', async () => {
