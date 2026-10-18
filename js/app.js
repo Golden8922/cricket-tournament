@@ -139,6 +139,11 @@ const App = {
     const label = document.getElementById('ptr-indicator-text');
     if (!indicator || !label) return;
 
+    // Only in the installed app: in a normal browser tab the browser already has its own pull-to-refresh
+    const standalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) ||
+      window.navigator.standalone === true;
+    if (!standalone) return;
+
     const THRESHOLD = 80;
     let startY = 0;
     let startX = 0;

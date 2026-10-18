@@ -1516,10 +1516,6 @@ button:active {
 /* ============================================================
    Sync bar, pull-to-refresh, first-load skeleton
    ============================================================ */
-html, body {
-  overscroll-behavior-y: contain; /* our pull-to-refresh replaces the browser's */
-}
-
 .sync-bar {
   display: flex;
   align-items: center;
@@ -1530,7 +1526,15 @@ html, body {
   color: var(--text-muted);
   background: var(--bg-surface-2);
   border-bottom: 1px solid var(--border-subtle);
-  min-height: 28px;
+  height: 30px;
+  overflow: hidden;
+}
+
+#sync-bar-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sync-dot {
