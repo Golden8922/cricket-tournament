@@ -211,11 +211,13 @@ function loadDb({ token = true, fetchImpl } = {}) {
   };
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(path.join(ROOT, 'js', 'seed.js'), 'utf8'), sandbox);
+  vm.runInContext(fs.readFileSync(path.join(ROOT, 'js', 'engine.js'), 'utf8'), sandbox);
+  const engine = vm.runInContext('CricketEngine', sandbox);
   const db = vm.runInContext(fs.readFileSync(path.join(ROOT, 'js', 'db.js'), 'utf8') + '\n;AppDB', sandbox);
   if (token) {
     db.currentUser = { name: 'Test', role: 'umpire', token: 't', exp: Date.now() + 3600e3 };
   }
-  return { db, storage, calls };
+  return { db, storage, calls, engine };
 }
 const ok = (json) => ({ ok: true, status: 200, json: async () => json });
 const posts = (calls) => calls.filter((c) => c.method === 'POST');
@@ -360,4 +362,42 @@ test('matches scored by an older version are recovered once, then pushed (one-ti
   storage.set('cct_matches', JSON.stringify([]));
   await db.pullFromCloud();
   assert.equal(posts(calls).length, 1);
+});
+
+test('past matches from final scores give the right results, points and NRR', async () => {
+  const { db, storage, engine } = loadDb({ fetchImpl: async () => ok({}) });
+  db.ensureSeedData();
+
+  const m1 = await db.addPastMatch({
+    teamA: 'Dominators', teamB: 'Falcons', overs: 8,
+    inn1: { runs: 44, wickets: 2, balls: 48 }, inn2: { runs: 45, wickets: 3, balls: 21 },
+    playedAt: new Date('2026-10-17T06:30').getTime()
+  });
+  assert.equal(m1.result, 'Falcons won by 7 wickets (27 balls left)');
+
+  const m2 = await db.addPastMatch({
+    teamA: 'Sitare Strikers', teamB: 'Power Smashers', overs: 8,
+    inn1: { runs: 50, wickets: 5, balls: 48 }, inn2: { runs: 54, wickets: 5, balls: 41 },
+    playedAt: new Date('2026-10-17T08:43').getTime()
+  });
+  assert.equal(m2.result, 'Power Smashers won by 5 wickets (7 balls left)');
+
+  const matches = JSON.parse(storage.get('cct_matches'));
+  const table = engine.calculatePointsTable(matches, JSON.parse(storage.get('cct_teams')));
+  const row = (name) => table.find((r) => r.teamName === name);
+  assert.deepEqual([row('Falcons').played, row('Falcons').won, row('Falcons').points, row('Falcons').nrrFormatted], [1, 1, 2, '+7.357']);
+  assert.deepEqual([row('Dominators').played, row('Dominators').lost, row('Dominators').points, row('Dominators').nrrFormatted], [1, 1, 0, '-7.357']);
+  assert.deepEqual([row('Power Smashers').points, row('Power Smashers').nrrFormatted], [2, '+1.652']);
+  assert.deepEqual([row('Sitare Strikers').points, row('Sitare Strikers').nrrFormatted], [0, '-1.652']);
+  assert.deepEqual(db.getDirty(), ['matches'], 'queued for upload');
+
+  // validation
+  await assert.rejects(() => db.addPastMatch({ teamA: 'Falcons', teamB: 'Falcons', overs: 8, inn1: {}, inn2: {}, playedAt: 1 }), /different teams/);
+  await assert.rejects(() => db.addPastMatch({ teamA: 'Falcons', teamB: 'Dominators', overs: 8, inn1: { runs: 1, wickets: 0, balls: 49 }, inn2: { runs: 1, wickets: 0, balls: 1 }, playedAt: 1 }), /cannot exceed/);
+});
+
+test('adding a past match requires staff sign-in', async () => {
+  const { db } = loadDb({ token: false, fetchImpl: async () => ok({}) });
+  db.ensureSeedData();
+  await assert.rejects(() => db.addPastMatch({}), /Unauthorized/);
 });

@@ -290,6 +290,36 @@ const CricketEngine = {
     return stats;
   },
 
+  // Innings stats for a match. Matches entered by hand after the fact ("past matches") carry
+  // only final totals in match.summary; every other match is derived from its ball list.
+  getInningsStats(match, inningsNo) {
+    const battingIds = inningsNo === 1 ? (match.teamAPlayerIds || []) : (match.teamBPlayerIds || []);
+    const bowlingIds = inningsNo === 1 ? (match.teamBPlayerIds || []) : (match.teamAPlayerIds || []);
+    const summary = match.summary && match.summary[inningsNo === 1 ? 'inn1' : 'inn2'];
+
+    if (summary) {
+      const balls = Math.max(0, Number(summary.balls) || 0);
+      return {
+        totalRuns: Math.max(0, Number(summary.runs) || 0),
+        wickets: Math.max(0, Number(summary.wickets) || 0),
+        legalBalls: balls,
+        oversFormatted: CricketEngine.formatOvers(balls),
+        extras: { wide: 0, noball: 0, bye: 0, legbye: 0, total: 0 },
+        batters: {},
+        bowlers: {},
+        fallOfWickets: [],
+        oversHistory: [],
+        currentOverBalls: [],
+        recentBalls: [],
+        isAllOut: Boolean(summary.allOut),
+        isInningsOver: true
+      };
+    }
+
+    const inningsBalls = (match.balls || []).filter(b => b.innings === inningsNo);
+    return CricketEngine.replayInnings(inningsBalls, battingIds, bowlingIds, match.overs || 5);
+  },
+
   // Helper for badge display of a ball
   createBallBadge(ball, totalRuns, isWicket) {
     if (isWicket) {
@@ -367,11 +397,8 @@ const CricketEngine = {
         if (pStats[pid]) pStats[pid].matchesPlayed += 1;
       });
 
-      const innings1Balls = (match.balls || []).filter(b => b.innings === 1);
-      const innings2Balls = (match.balls || []).filter(b => b.innings === 2);
-
-      const in1 = CricketEngine.replayInnings(innings1Balls, match.teamAPlayerIds || [], match.teamBPlayerIds || [], match.overs || 5);
-      const in2 = CricketEngine.replayInnings(innings2Balls, match.teamBPlayerIds || [], match.teamAPlayerIds || [], match.overs || 5);
+      const in1 = CricketEngine.getInningsStats(match, 1);
+      const in2 = CricketEngine.getInningsStats(match, 2);
 
       [in1, in2].forEach(rep => {
         // Batting aggregates
@@ -470,11 +497,8 @@ const CricketEngine = {
       teamA.played += 1;
       teamB.played += 1;
 
-      const in1Balls = (m.balls || []).filter(b => b.innings === 1);
-      const in2Balls = (m.balls || []).filter(b => b.innings === 2);
-
-      const in1 = CricketEngine.replayInnings(in1Balls, m.teamAPlayerIds || [], m.teamBPlayerIds || [], m.overs || 5);
-      const in2 = CricketEngine.replayInnings(in2Balls, m.teamBPlayerIds || [], m.teamAPlayerIds || [], m.overs || 5);
+      const in1 = CricketEngine.getInningsStats(m, 1);
+      const in2 = CricketEngine.getInningsStats(m, 2);
 
       const maxOvers = Number(m.overs) || 5;
 
@@ -532,11 +556,8 @@ const CricketEngine = {
   calculateMatchNetRunRate(match) {
     if (!match) return null;
     const maxOvers = Number(match.overs) || 5;
-    const in1Balls = (match.balls || []).filter(b => b.innings === 1);
-    const in2Balls = (match.balls || []).filter(b => b.innings === 2);
-
-    const in1 = CricketEngine.replayInnings(in1Balls, match.teamAPlayerIds || [], match.teamBPlayerIds || [], maxOvers);
-    const in2 = CricketEngine.replayInnings(in2Balls, match.teamBPlayerIds || [], match.teamAPlayerIds || [], maxOvers);
+    const in1 = CricketEngine.getInningsStats(match, 1);
+    const in2 = CricketEngine.getInningsStats(match, 2);
 
     // ICC Tournament Rule: If team is all out, the full quota of overs is charged for NRR calculation
     const teamAOversFaced = in1.isAllOut ? maxOvers : (Math.floor(in1.legalBalls / 6) + (in1.legalBalls % 6) / 6);

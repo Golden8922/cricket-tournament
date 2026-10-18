@@ -2217,6 +2217,81 @@ const App = {
     `;
   },
 
+  // ---- Add past match (staff) ----
+  // "8.0" -> 48 balls, "3.3" -> 21 balls, "8" -> 48. Returns NaN for anything else.
+  parseOversToBalls(text) {
+    const m = /^\s*(\d+)(?:\.([0-5]))?\s*$/.exec(String(text || ''));
+    if (!m) return NaN;
+    return Number(m[1]) * 6 + Number(m[2] || 0);
+  },
+
+  readPastMatchForm() {
+    const val = (id) => document.getElementById(id)?.value;
+    const num = (id) => (val(id) === '' ? NaN : Number(val(id)));
+    const when = val('past-datetime');
+    return {
+      teamA: val('past-team-a'),
+      teamB: val('past-team-b'),
+      overs: num('past-overs'),
+      inn1: {
+        runs: num('past-a-runs'), wickets: num('past-a-wkts'),
+        balls: this.parseOversToBalls(val('past-a-overs')),
+        allOut: document.getElementById('past-a-allout')?.checked
+      },
+      inn2: {
+        runs: num('past-b-runs'), wickets: num('past-b-wkts'),
+        balls: this.parseOversToBalls(val('past-b-overs')),
+        allOut: document.getElementById('past-b-allout')?.checked
+      },
+      playedAt: when ? new Date(when).getTime() : NaN
+    };
+  },
+
+  // Shows the result the table will use, before saving
+  updatePastMatchPreview() {
+    const box = document.getElementById('past-result-preview');
+    if (!box) return;
+    const d = this.readPastMatchForm();
+    const ok = [d.inn1.runs, d.inn1.wickets, d.inn1.balls, d.inn2.runs, d.inn2.wickets, d.inn2.balls].every(n => Number.isFinite(n));
+    if (!ok || !d.teamA || !d.teamB || d.teamA === d.teamB) {
+      box.style.display = 'none';
+      return;
+    }
+    const teams = AppDB.getLocalTeams();
+    const teamB = teams.find(t => t.name === d.teamB);
+    const tmp = { overs: d.overs, summary: { inn1: d.inn1, inn2: d.inn2 } };
+    const result = CricketEngine.generateMatchResultText(
+      d.teamA, d.teamB,
+      CricketEngine.getInningsStats(tmp, 1), CricketEngine.getInningsStats(tmp, 2),
+      d.overs, ((teamB && teamB.playerIds) || []).length || 11
+    );
+    box.style.display = 'block';
+    box.textContent = `Result: ${result}`;
+  },
+
+  async openAddPastMatchModal() {
+    if (!AppDB.isStaff()) {
+      this.showToast('Staff/Admin login required to add a match', 'error');
+      return;
+    }
+    const form = document.getElementById('form-add-past-match');
+    if (form) form.reset();
+    const teams = await AppDB.getTeams();
+    const options = (selectedIdx) => teams.map((t, i) =>
+      `<option value="${this.escapeHtml(t.name)}" ${i === selectedIdx ? 'selected' : ''}>${this.escapeHtml(t.name)}</option>`).join('');
+    const selA = document.getElementById('past-team-a');
+    const selB = document.getElementById('past-team-b');
+    if (selA) selA.innerHTML = options(0);
+    if (selB) selB.innerHTML = options(1);
+    const dt = document.getElementById('past-datetime');
+    if (dt) dt.value = this.toLocalInputValue(Date.now());
+    const overs = document.getElementById('past-overs');
+    if (overs) overs.value = 8;
+    const box = document.getElementById('past-result-preview');
+    if (box) box.style.display = 'none';
+    this.openModal('modal-add-past-match');
+  },
+
   // ---- Edit match date/time (staff) ----
   toLocalInputValue(ts) {
     const d = new Date(ts || Date.now());
@@ -2260,6 +2335,35 @@ const App = {
   // MATCH HISTORY & PLAYERS (FR-19, FR-20, FR-21, FR-22)
   // ==========================================
   setupHistoryAndPlayers() {
+    // Add past match (final scores only)
+    const btnAddPast = document.getElementById('btn-open-add-past-match');
+    if (btnAddPast) {
+      btnAddPast.addEventListener('click', () => this.openAddPastMatchModal());
+    }
+    const formAddPast = document.getElementById('form-add-past-match');
+    if (formAddPast) {
+      formAddPast.addEventListener('input', () => this.updatePastMatchPreview());
+      formAddPast.addEventListener('change', () => this.updatePastMatchPreview());
+      formAddPast.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const data = this.readPastMatchForm();
+        try {
+          if (Number.isNaN(data.inn1.balls) || Number.isNaN(data.inn2.balls)) {
+            throw new Error('Overs must look like 8.0 or 3.3 (the digit after the dot is balls, 0 to 5)');
+          }
+          const match = await AppDB.addPastMatch(data);
+          this.closeModal('modal-add-past-match');
+          this.showToast(`Saved: ${match.result}`, 'success');
+          this.renderHistoryView();
+          this.renderLiveView();
+          this.renderPointsTable();
+          this.renderPlayersTable();
+        } catch (err) {
+          this.showToast(err.message, 'error');
+        }
+      });
+    }
+
     // Edit match date/time form
     const formEditMatchDate = document.getElementById('form-edit-match-date');
     if (formEditMatchDate) {
@@ -2355,11 +2459,8 @@ const App = {
   },
 
   generateMatchCardHTML(match, pMap, showDelete = true) {
-    const in1Balls = (match.balls || []).filter(b => b.innings === 1);
-    const in2Balls = (match.balls || []).filter(b => b.innings === 2);
-
-    const in1 = CricketEngine.replayInnings(in1Balls, match.teamAPlayerIds || [], match.teamBPlayerIds || [], match.overs);
-    const in2 = CricketEngine.replayInnings(in2Balls, match.teamBPlayerIds || [], match.teamAPlayerIds || [], match.overs);
+    const in1 = CricketEngine.getInningsStats(match, 1);
+    const in2 = CricketEngine.getInningsStats(match, 2);
 
     const dateStr = match.createdAt ? new Date(match.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
     const canDelete = AppDB.isStaff();
@@ -2464,11 +2565,10 @@ const App = {
     if (title) title.textContent = `${match.teamA} vs ${match.teamB}`;
     if (sub) sub.textContent = `${match.overs} Overs Match • ${match.result || 'In Progress'}`;
 
-    const in1Balls = (match.balls || []).filter(b => b.innings === 1);
     const in2Balls = (match.balls || []).filter(b => b.innings === 2);
 
-    const in1 = CricketEngine.replayInnings(in1Balls, match.teamAPlayerIds || [], match.teamBPlayerIds || [], match.overs);
-    const in2 = CricketEngine.replayInnings(in2Balls, match.teamBPlayerIds || [], match.teamAPlayerIds || [], match.overs);
+    const in1 = CricketEngine.getInningsStats(match, 1);
+    const in2 = CricketEngine.getInningsStats(match, 2);
 
     const renderInningsTable = (teamBattingName, repStats) => `
       <div style="margin-bottom: 20px;">
@@ -2577,7 +2677,20 @@ const App = {
       </div>
     ` : '';
 
-    if (body) {
+    if (body && match.summary) {
+      // Entered by hand from final scores: show totals only (there is no ball-by-ball data)
+      const totalsRow = (name, st, label) => `
+        <div style="display: flex; justify-content: space-between; align-items: baseline; padding: 8px 0; border-bottom: 1px solid var(--border-subtle);">
+          <div><strong>${this.escapeHtml(name)}</strong> <span style="font-size: 0.75rem; color: var(--text-muted);">${label}</span></div>
+          <span style="font-family: var(--font-mono); font-weight: 800; font-size: 1.1rem;">${st.totalRuns}/${st.wickets} (${st.oversFormatted} ov)${st.isAllOut ? ' • all out' : ''}</span>
+        </div>`;
+      body.innerHTML = `
+        <p style="color: var(--text-muted); font-size: 0.82rem; margin-bottom: 8px;">Result entered from the final scores. No ball-by-ball scorecard was recorded for this match.</p>
+        ${totalsRow(match.teamA, in1, '1st innings')}
+        ${totalsRow(match.teamB, in2, '2nd innings')}
+        ${nrrSectionHtml}
+      `;
+    } else if (body) {
       body.innerHTML = `
         ${renderInningsTable(match.teamA, in1)}
         ${(in2Balls.length > 0 || match.currentInnings === 2) ? renderInningsTable(match.teamB, in2) : '<p style="color: var(--text-muted); font-size: 0.85rem;">2nd Innings not yet commenced</p>'}

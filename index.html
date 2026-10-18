@@ -251,7 +251,10 @@
       <section id="view-history" class="view-panel">
         <div class="section-header">
           <h1 class="section-title">🏆 Match History</h1>
-          <div style="display: flex; gap: 8px;">
+          <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end;">
+            <button id="btn-open-add-past-match" data-staff-only class="btn-primary" style="padding: 6px 12px; min-height: 38px; font-size: 0.8rem;">
+              ➕ Add Past Match
+            </button>
             <input type="text" id="history-search-input" class="form-input" placeholder="Search team or match..." style="padding: 6px 12px; min-height: 38px; font-size: 0.85rem; width: 180px;">
           </div>
         </div>
@@ -498,6 +501,60 @@
           </div>
           <button type="submit" class="btn-primary btn-full" style="margin-top: 10px;">
             <span>Save Team Name</span>
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Modal: Add Past Match (final scores only) -->
+    <div id="modal-add-past-match" class="modal-overlay">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <h2 class="modal-title">➕ Add Past Match</h2>
+          <button class="modal-close-btn" data-close-modal="modal-add-past-match">✕</button>
+        </div>
+        <form id="form-add-past-match" autocomplete="off">
+          <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 10px;">
+            For a match that was not scored ball-by-ball. Enter the final scores; the result, points and NRR are worked out automatically.
+          </p>
+          <div class="form-group">
+            <label class="form-label" for="past-team-a">Team that batted first <span class="req">*</span></label>
+            <select id="past-team-a" class="form-select" required></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="past-team-b">Team that batted second <span class="req">*</span></label>
+            <select id="past-team-b" class="form-select" required></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="past-overs">Overs per side <span class="req">*</span></label>
+            <input type="number" id="past-overs" class="form-input" min="1" max="50" step="1" value="8" required>
+          </div>
+
+          <div style="font-weight: 800; font-size: 0.85rem; margin: 6px 0;">1st innings (batting first)</div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;">
+            <div class="form-group"><label class="form-label" for="past-a-runs">Runs</label><input type="number" id="past-a-runs" class="form-input" min="0" step="1" required></div>
+            <div class="form-group"><label class="form-label" for="past-a-wkts">Wickets</label><input type="number" id="past-a-wkts" class="form-input" min="0" max="10" step="1" required></div>
+            <div class="form-group"><label class="form-label" for="past-a-overs">Overs</label><input type="text" id="past-a-overs" class="form-input" inputmode="decimal" placeholder="8.0" required></div>
+          </div>
+          <label style="display: flex; align-items: center; gap: 8px; font-size: 0.8rem; margin-bottom: 10px;"><input type="checkbox" id="past-a-allout"> All out</label>
+
+          <div style="font-weight: 800; font-size: 0.85rem; margin: 6px 0;">2nd innings (chasing)</div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;">
+            <div class="form-group"><label class="form-label" for="past-b-runs">Runs</label><input type="number" id="past-b-runs" class="form-input" min="0" step="1" required></div>
+            <div class="form-group"><label class="form-label" for="past-b-wkts">Wickets</label><input type="number" id="past-b-wkts" class="form-input" min="0" max="10" step="1" required></div>
+            <div class="form-group"><label class="form-label" for="past-b-overs">Overs</label><input type="text" id="past-b-overs" class="form-input" inputmode="decimal" placeholder="3.3" required></div>
+          </div>
+          <label style="display: flex; align-items: center; gap: 8px; font-size: 0.8rem; margin-bottom: 10px;"><input type="checkbox" id="past-b-allout"> All out</label>
+
+          <div class="form-group">
+            <label class="form-label" for="past-datetime">When was it played? <span class="req">*</span></label>
+            <input type="datetime-local" id="past-datetime" class="form-input" required>
+          </div>
+
+          <div id="past-result-preview" style="background: var(--bg-surface-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 8px 10px; font-size: 0.82rem; font-weight: 700; margin-bottom: 10px; display: none;"></div>
+
+          <button type="submit" class="btn-primary btn-full" style="margin-top: 6px;">
+            <span>Save Match Result</span>
           </button>
         </form>
       </div>

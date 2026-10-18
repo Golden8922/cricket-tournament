@@ -768,6 +768,66 @@ const AppDB = {
     return newMatch;
   },
 
+  // Record a finished match from its final scores only (no ball-by-ball data).
+  // data: { teamA, teamB (names; teamA batted first), overs, inn1/inn2: {runs, wickets, balls, allOut}, playedAt }
+  async addPastMatch(data) {
+    this.requireStaff();
+
+    const teams = this.getLocalTeams();
+    const teamA = teams.find(t => t.name === data.teamA);
+    const teamB = teams.find(t => t.name === data.teamB);
+    if (!teamA || !teamB) throw new Error('Please select two existing teams');
+    if (teamA.name === teamB.name) throw new Error('Please select two different teams');
+
+    const overs = Number(data.overs);
+    if (!Number.isInteger(overs) || overs < 1 || overs > 50) throw new Error('Overs must be a whole number from 1 to 50');
+
+    const clean = (inn, label) => {
+      const runs = Number(inn && inn.runs);
+      const wickets = Number(inn && inn.wickets);
+      const balls = Number(inn && inn.balls);
+      if (!Number.isInteger(runs) || runs < 0) throw new Error(`${label}: runs must be 0 or more`);
+      if (!Number.isInteger(wickets) || wickets < 0 || wickets > 10) throw new Error(`${label}: wickets must be 0 to 10`);
+      if (!Number.isInteger(balls) || balls < 0 || balls > overs * 6) throw new Error(`${label}: overs faced cannot exceed ${overs} overs`);
+      return { runs, wickets, balls, allOut: Boolean(inn.allOut) };
+    };
+    const inn1 = clean(data.inn1, `${teamA.name} innings`);
+    const inn2 = clean(data.inn2, `${teamB.name} innings`);
+
+    const playedAt = Number(data.playedAt);
+    if (!Number.isFinite(playedAt) || playedAt <= 0) throw new Error('Please pick when the match was played');
+
+    const match = {
+      id: 'm_past_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
+      teamA: teamA.name,
+      teamB: teamB.name,
+      teamAPlayerIds: [],
+      teamBPlayerIds: [],
+      overs,
+      currentInnings: 2,
+      status: 'done',
+      balls: [],
+      manual: true,
+      summary: { inn1, inn2 },
+      createdAt: playedAt,
+      updatedAt: Date.now()
+    };
+
+    const in1Stats = CricketEngine.getInningsStats(match, 1);
+    const in2Stats = CricketEngine.getInningsStats(match, 2);
+    match.result = CricketEngine.generateMatchResultText(
+      teamA.name, teamB.name, in1Stats, in2Stats, overs, (teamB.playerIds || []).length || 11
+    );
+    match.nrrData = CricketEngine.calculateMatchNetRunRate(match);
+
+    const matches = [match, ...this.getLocalMatches()].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    localStorage.setItem(this.STORAGE_KEYS.MATCHES, JSON.stringify(matches));
+    this.notifyListeners('matches');
+    this.broadcast('matches');
+    this.queueSync(['matches']);
+    return match;
+  },
+
   async updateMatch(matchId, patchData) {
     if (!this.isStaff()) throw new Error('Unauthorized: Staff access required');
 
