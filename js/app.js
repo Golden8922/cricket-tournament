@@ -2849,14 +2849,6 @@ const App = {
           <td class="num-cell">${row.tied}</td>
           <td class="num-cell"><span class="pts-badge">${row.points}</span></td>
           <td class="num-cell"><span class="nrr-badge ${nrrClass}">${row.nrrFormatted}</span></td>
-          <td class="num-cell">
-            <div>${row.runsScored}</div>
-            <div class="overs-split">${row.oversFacedDec.toFixed(1)} ov</div>
-          </td>
-          <td class="num-cell">
-            <div>${row.runsConceded}</div>
-            <div class="overs-split">${row.oversBowledDec.toFixed(1)} ov</div>
-          </td>
         </tr>
       `;
     }).join('');
