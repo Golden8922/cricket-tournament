@@ -503,6 +503,27 @@
       </div>
     </div>
 
+    <!-- Modal: Edit Match Date/Time -->
+    <div id="modal-edit-match-date" class="modal-overlay">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <h2 class="modal-title">🕒 Edit Match Date & Time</h2>
+          <button class="modal-close-btn" data-close-modal="modal-edit-match-date">✕</button>
+        </div>
+        <form id="form-edit-match-date">
+          <input type="hidden" id="edit-match-date-id">
+          <p id="edit-match-date-info" style="font-size: 0.9rem; font-weight: 700; margin-bottom: 10px;"></p>
+          <div class="form-group">
+            <label class="form-label" for="edit-match-datetime">When was this match played? <span class="req">*</span></label>
+            <input type="datetime-local" id="edit-match-datetime" class="form-input" required>
+          </div>
+          <button type="submit" class="btn-primary btn-full" style="margin-top: 10px;">
+            <span>Save Date & Time</span>
+          </button>
+        </form>
+      </div>
+    </div>
+
     <!-- Modal: Add New Player -->
     <div id="modal-add-player" class="modal-overlay">
       <div class="modal-dialog" style="max-width: 520px;">

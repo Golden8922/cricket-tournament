@@ -69,6 +69,7 @@ const App = {
       case 'deletePlayer': return this.confirmDeletePlayer(d.id, d.name);
       case 'navigate': return this.navigateTo(d.view);
       case 'deleteMatch': return this.confirmDeleteMatch(d.id);
+      case 'editMatchDate': return this.openEditMatchDateModal(d.id);
       case 'scorecard': return this.openFullScorecardModal(d.id);
       case 'toggleOver': return this.toggleOverHistory(d.target);
       case 'share': return this.shareLiveMatch(d.id, d.teamA, d.teamB, d.score, d.overs);
@@ -2034,14 +2035,8 @@ const App = {
         </div>
       `;
 
-      if (secondaryContainer && completedMatches.length > 0) {
-        const latest = completedMatches[0];
-        secondaryContainer.innerHTML = `
-          <div class="section-header" style="margin-top: 24px;">
-            <h3 style="font-size: 1.1rem; font-weight: 700;">Recent Result</h3>
-          </div>
-          ${this.generateMatchCardHTML(latest, pMap, false)}
-        `;
+      if (secondaryContainer) {
+        secondaryContainer.innerHTML = this.renderRecentResultsHTML(completedMatches, pMap);
       }
       return;
     }
@@ -2202,7 +2197,47 @@ const App = {
       </div>
     `;
 
-    if (secondaryContainer) secondaryContainer.innerHTML = '';
+    if (secondaryContainer) {
+      secondaryContainer.innerHTML = this.renderRecentResultsHTML(completedMatches, pMap);
+    }
+  },
+
+  // Latest finished matches (newest first by match date) shown under the live view
+  renderRecentResultsHTML(completedMatches, pMap, limit = 3) {
+    if (!completedMatches || completedMatches.length === 0) return '';
+    const recent = [...completedMatches]
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+      .slice(0, limit);
+    return `
+      <div class="section-header" style="margin-top: 24px;">
+        <h3 style="font-size: 1.1rem; font-weight: 700;">Recent Matches</h3>
+        <button class="btn-secondary" style="padding: 4px 10px; min-height: 30px; font-size: 0.75rem;" data-action="navigate" data-view="view-history">View all</button>
+      </div>
+      ${recent.map(m => this.generateMatchCardHTML(m, pMap, false)).join('')}
+    `;
+  },
+
+  // ---- Edit match date/time (staff) ----
+  toLocalInputValue(ts) {
+    const d = new Date(ts || Date.now());
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  },
+
+  async openEditMatchDateModal(matchId) {
+    if (!AppDB.isStaff()) {
+      this.showToast('Staff/Admin login required to edit match date', 'error');
+      return;
+    }
+    const match = await AppDB.getMatch(matchId);
+    if (!match) return;
+    const idInput = document.getElementById('edit-match-date-id');
+    const info = document.getElementById('edit-match-date-info');
+    const input = document.getElementById('edit-match-datetime');
+    if (idInput) idInput.value = match.id;
+    if (info) info.textContent = `${match.teamA} vs ${match.teamB}`;
+    if (input) input.value = this.toLocalInputValue(match.createdAt);
+    this.openModal('modal-edit-match-date');
   },
 
   // Web Share API
@@ -2225,6 +2260,30 @@ const App = {
   // MATCH HISTORY & PLAYERS (FR-19, FR-20, FR-21, FR-22)
   // ==========================================
   setupHistoryAndPlayers() {
+    // Edit match date/time form
+    const formEditMatchDate = document.getElementById('form-edit-match-date');
+    if (formEditMatchDate) {
+      formEditMatchDate.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const matchId = document.getElementById('edit-match-date-id').value;
+        const value = document.getElementById('edit-match-datetime').value;
+        const ts = value ? new Date(value).getTime() : NaN;
+        if (!matchId || Number.isNaN(ts)) {
+          this.showToast('Please pick a valid date and time', 'error');
+          return;
+        }
+        try {
+          await AppDB.updateMatch(matchId, { createdAt: ts });
+          this.closeModal('modal-edit-match-date');
+          this.showToast('Match date updated', 'success');
+          this.renderHistoryView();
+          this.renderLiveView();
+        } catch (err) {
+          this.showToast(err.message, 'error');
+        }
+      });
+    }
+
     // History search
     const historySearch = document.getElementById('history-search-input');
     if (historySearch) {
@@ -2353,9 +2412,14 @@ const App = {
           </button>
 
           ${(canDelete && showDelete) ? `
-            <button class="btn-danger" style="padding: 4px 10px; min-height: 34px; font-size: 0.75rem;" data-action="deleteMatch" data-id="${this.escapeHtml(match.id)}">
-              🗑️ Delete
-            </button>
+            <div style="display: flex; gap: 6px;">
+              <button class="btn-secondary" style="padding: 4px 10px; min-height: 34px; font-size: 0.75rem;" data-action="editMatchDate" data-id="${this.escapeHtml(match.id)}">
+                🕒 Edit Date
+              </button>
+              <button class="btn-danger" style="padding: 4px 10px; min-height: 34px; font-size: 0.75rem;" data-action="deleteMatch" data-id="${this.escapeHtml(match.id)}">
+                🗑️ Delete
+              </button>
+            </div>
           ` : ''}
         </div>
       </div>
