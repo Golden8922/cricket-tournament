@@ -562,6 +562,107 @@ const CricketEngine = {
     });
   },
 
+  // League matches still to be played, as a list of [teamA, teamB] pairs.
+  // Every pair is assumed to meet `rounds` times (1 = single round robin), and any scheduled
+  // fixtures beyond that count too. Finished matches are subtracted; a live match is not finished.
+  getRemainingLeagueMatches(matches = [], teams = [], fixtures = [], rounds = 1) {
+    const names = teams.map(t => t.name);
+    const key = (a, b) => [a, b].sort().join('||');
+    const played = {};
+    const scheduled = {};
+
+    matches.forEach(m => {
+      if (m.status !== 'done' || !names.includes(m.teamA) || !names.includes(m.teamB)) return;
+      const k = key(m.teamA, m.teamB);
+      played[k] = (played[k] || 0) + 1;
+    });
+    fixtures.forEach(f => {
+      if (!names.includes(f.teamA) || !names.includes(f.teamB)) return;
+      const k = key(f.teamA, f.teamB);
+      scheduled[k] = (scheduled[k] || 0) + 1;
+    });
+
+    const remaining = [];
+    for (let i = 0; i < names.length; i++) {
+      for (let j = i + 1; j < names.length; j++) {
+        const k = key(names[i], names[j]);
+        const left = Math.max(rounds - (played[k] || 0), (scheduled[k] || 0) - (played[k] || 0), 0);
+        for (let c = 0; c < left; c++) remaining.push([names[i], names[j]]);
+      }
+    }
+    return remaining;
+  },
+
+  // Which teams are mathematically certain to finish in the top `spots`, whatever happens in
+  // the remaining matches (any win/loss/tie combination).
+  //   - A team can be overtaken by anyone who can finish on more points.
+  //   - On equal points the tie-break (net run rate...) is only treated as settled when neither
+  //     team has a match left; otherwise it is assumed to go against the team being checked,
+  //     because one big win or loss can swing a net run rate by any amount.
+  // `table` must be the sorted result of calculatePointsTable().
+  computeQualification(table = [], remaining = [], spots = 2) {
+    const n = table.length;
+    const qualified = new Set();
+    if (n === 0 || spots <= 0) return qualified;
+    if (spots >= n) return new Set(table.map(r => r.teamName));
+
+    const index = {};
+    table.forEach((r, i) => { index[r.teamName] = i; });
+    const base = table.map(r => r.points);
+    const left = new Array(n).fill(0);
+    const games = [];
+    remaining.forEach(([a, b]) => {
+      if (index[a] === undefined || index[b] === undefined) return;
+      games.push([index[a], index[b]]);
+      left[index[a]]++;
+      left[index[b]]++;
+    });
+
+    // true when team u can finish above team t at equal or higher points
+    const overtakes = (pts, u, t) => {
+      if (pts[u] !== pts[t]) return pts[u] > pts[t];
+      if (left[u] > 0 || left[t] > 0) return true; // tie-break still open
+      return u < t;                                  // both finished: current order is final
+    };
+
+    const safe = new Set(table.map((r, i) => i));
+    const MAX_ENUMERATED = 12;
+
+    if (games.length <= MAX_ENUMERATED) {
+      const pts = base.slice();
+      const check = () => {
+        for (const t of [...safe]) {
+          let ahead = 0;
+          for (let u = 0; u < n; u++) if (u !== t && overtakes(pts, u, t)) ahead++;
+          if (ahead >= spots) safe.delete(t);
+        }
+      };
+      const walk = (g) => {
+        if (safe.size === 0) return;
+        if (g === games.length) { check(); return; }
+        const [a, b] = games[g];
+        pts[a] += 2; walk(g + 1); pts[a] -= 2;          // a wins
+        pts[b] += 2; walk(g + 1); pts[b] -= 2;          // b wins
+        pts[a] += 1; pts[b] += 1; walk(g + 1); pts[a] -= 1; pts[b] -= 1; // tie
+      };
+      walk(0);
+    } else {
+      // Too many matches to enumerate: cautious bound (everyone else wins all their matches)
+      const most = base.map((p, i) => p + 2 * left[i]);
+      for (const t of [...safe]) {
+        let ahead = 0;
+        for (let u = 0; u < n; u++) {
+          if (u === t) continue;
+          if (most[u] > base[t] || (most[u] === base[t] && (left[u] > 0 || left[t] > 0 || u < t))) ahead++;
+        }
+        if (ahead >= spots) safe.delete(t);
+      }
+    }
+
+    safe.forEach(i => qualified.add(table[i].teamName));
+    return qualified;
+  },
+
   // Calculate single match Net Run Rate (NRR) and Run Rates for both teams according to ICC rules
   calculateMatchNetRunRate(match) {
     if (!match) return null;

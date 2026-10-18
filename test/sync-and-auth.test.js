@@ -505,3 +505,71 @@ test('sync API accepts fixtures as a section', async () => {
   assert.equal(res.statusCode, 200);
   assert.deepEqual(JSON.parse(blobStore.body).fixtures, [{ id: 'f1', teamA: 'A', teamB: 'B' }]);
 });
+
+// ---------------------------------------------------------------------------
+// Qualification ("Q") is only given when it is mathematically certain
+// ---------------------------------------------------------------------------
+test('Q: only teams certain to finish in the top N whatever the remaining results', () => {
+  const { engine } = loadDb({ fetchImpl: async () => ok({}) });
+  const row = (teamName, points) => ({ teamName, points });
+
+  // A has 6; the best any single rival can do is 6 and two rivals cannot both reach it (B-C is a match)
+  let table = [row('A', 6), row('B', 2), row('C', 2), row('D', 0)];
+  let rem = [['B', 'C'], ['B', 'D'], ['C', 'D']];
+  assert.deepEqual([...engine.computeQualification(table, rem, 2)], ['A']);
+
+  // level on points with matches left: nobody is certain
+  table = [row('A', 4), row('B', 4), row('C', 2), row('D', 0)];
+  rem = [['A', 'C'], ['B', 'D']];
+  assert.deepEqual([...engine.computeQualification(table, rem, 2)], []);
+
+  // league finished: the final order decides (tie already settled by the table order)
+  table = [row('A', 4), row('B', 4), row('C', 2), row('D', 0)];
+  assert.deepEqual([...engine.computeQualification(table, [], 1)], ['A']);
+  assert.deepEqual([...engine.computeQualification(table, [], 2)].sort(), ['A', 'B']);
+
+  // a team can be certain even though it has matches left (clear points lead)
+  table = [row('A', 8), row('B', 2), row('C', 2), row('D', 2)];
+  rem = [['A', 'B'], ['C', 'D'], ['B', 'C']];
+  assert.ok(engine.computeQualification(table, rem, 2).has('A'));
+
+  // nothing to decide when everyone qualifies
+  assert.equal(engine.computeQualification(table, rem, 4).size, 4);
+});
+
+test('Q: with the real standings so far nobody is certain yet, and finishing the league settles it', () => {
+  const { engine } = loadDb({ fetchImpl: async () => ok({}) });
+  const mk = (a, b, ra, rb) => ({
+    id: a + b, teamA: a, teamB: b, overs: 8, status: 'done', createdAt: 1, balls: [],
+    summary: { inn1: { runs: ra, wickets: 0, balls: 48 }, inn2: { runs: rb, wickets: 0, balls: 48 } }
+  });
+  const teams = ['Falcons', 'Sitare Strikers', 'Dominators', 'Power Smashers'].map((n) => ({ id: n, name: n }));
+  // 4 of the 6 round-robin matches played (same shape as the live tournament)
+  let matches = [mk('Falcons', 'Sitare Strikers', 40, 50), mk('Dominators', 'Power Smashers', 40, 50), mk('Sitare Strikers', 'Power Smashers', 40, 50), mk('Dominators', 'Falcons', 40, 50)];
+  let table = engine.calculatePointsTable(matches, teams);
+  let remaining = engine.getRemainingLeagueMatches(matches, teams, [], 1);
+  assert.equal(remaining.length, 2);
+  assert.deepEqual(Array.from(remaining, (r) => Array.from(r).sort().join(' v ')).sort(), ['Dominators v Sitare Strikers', 'Falcons v Power Smashers']);
+  assert.equal(engine.computeQualification(table, remaining, 2).size, 0);
+
+  // the league finishes: Power Smashers win again and Sitare Strikers beat Dominators
+  matches = matches.concat([mk('Falcons', 'Power Smashers', 40, 50), mk('Dominators', 'Sitare Strikers', 40, 50)]);
+  table = engine.calculatePointsTable(matches, teams);
+  remaining = engine.getRemainingLeagueMatches(matches, teams, [], 1);
+  assert.equal(remaining.length, 0);
+  const q = engine.computeQualification(table, remaining, 2);
+  assert.deepEqual([...q].sort(), Array.from(table.slice(0, 2), (r) => r.teamName).sort());
+});
+
+test('remaining league matches: round robin gaps plus extra scheduled fixtures; live matches are not finished', () => {
+  const { engine } = loadDb({ fetchImpl: async () => ok({}) });
+  const teams = ['A', 'B', 'C'].map((n) => ({ id: n, name: n }));
+  const done = { id: '1', teamA: 'A', teamB: 'B', status: 'done' };
+  assert.equal(engine.getRemainingLeagueMatches([done], teams, [], 1).length, 2);
+  assert.equal(engine.getRemainingLeagueMatches([done], teams, [], 2).length, 5);
+  // an extra fixture for a pair that already played once
+  const fx = [{ teamA: 'A', teamB: 'B' }, { teamA: 'A', teamB: 'B' }];
+  assert.equal(engine.getRemainingLeagueMatches([done], teams, fx, 1).length, 3);
+  const live = { id: '2', teamA: 'A', teamB: 'C', status: 'live' };
+  assert.equal(engine.getRemainingLeagueMatches([done, live], teams, [], 1).length, 2);
+});

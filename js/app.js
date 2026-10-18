@@ -3,7 +3,8 @@
 
 const App = {
   activeView: 'view-live',
-  QUALIFY_SPOTS: 2, // top N teams get a "Q" mark in the points table
+  QUALIFY_SPOTS: 2, // top N teams reach the final; "Q" is shown only once a team is mathematically certain
+  LEAGUE_ROUNDS: 1, // how many times every pair of teams meets in the league stage
   _refreshing: false,
   currentModifier: null, // null | 'wide' | 'noball' | 'bye' | 'legbye'
   activeScoringMatch: null,
@@ -189,10 +190,13 @@ const App = {
   // ==========================================
   // POINTS TABLE LEGEND
   // ==========================================
-  updateTableLegend() {
+  updateTableLegend(remainingCount = 0) {
     const el = document.getElementById('table-legend');
     if (!el) return;
-    el.innerHTML = `<span class="q-badge" style="margin-left:0">Q</span> in a qualifying position (top ${this.QUALIFY_SPOTS}). Teams level on points are ranked by net run rate, then wins, then head-to-head.`;
+    const left = remainingCount === 0
+      ? 'The league stage is complete.'
+      : `${remainingCount} league match${remainingCount === 1 ? '' : 'es'} still to play.`;
+    el.innerHTML = `<span class="q-badge" style="margin-left:0">Q</span> Qualified for the final: certain to finish in the top ${this.QUALIFY_SPOTS} whatever the remaining results (points and tie-breaks considered). ${left} Teams level on points are ranked by net run rate, then wins, then head-to-head.`;
   },
 
   // ==========================================
@@ -3460,8 +3464,9 @@ const App = {
     }
 
     const tableRows = CricketEngine.calculatePointsTable(matches, teams);
-    const showQ = tableRows.some(r => r.played > 0);
-    this.updateTableLegend();
+    const remainingMatches = CricketEngine.getRemainingLeagueMatches(matches, teams, AppDB.getLocalFixtures(), this.LEAGUE_ROUNDS);
+    const qualified = CricketEngine.computeQualification(tableRows, remainingMatches, this.QUALIFY_SPOTS);
+    this.updateTableLegend(remainingMatches.length);
 
     tbody.innerHTML = tableRows.map((row, idx) => {
       const rank = idx + 1;
@@ -3479,7 +3484,7 @@ const App = {
           </td>
           <td>
             <div class="table-team-name">
-              <span>${this.escapeHtml(row.teamName)}</span>${showQ && rank <= this.QUALIFY_SPOTS ? '<span class="q-badge" title="In a qualifying position">Q</span>' : ''}
+              <span>${this.escapeHtml(row.teamName)}</span>${qualified.has(row.teamName) ? '<span class="q-badge" title="Qualified for the final: certain whatever the remaining results">Q</span>' : ''}
             </div>
             ${row.motto ? `<div class="table-team-motto">"${this.escapeHtml(row.motto)}"</div>` : ''}
           </td>
