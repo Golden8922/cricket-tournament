@@ -243,6 +243,15 @@ const App = {
   // ==========================================
   setupPWA() {
     if ('serviceWorker' in navigator) {
+      // When an updated service worker takes control, reload once so people never keep an old version
+      const hadController = Boolean(navigator.serviceWorker.controller);
+      let reloadedForUpdate = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (!hadController || reloadedForUpdate) return;
+        reloadedForUpdate = true;
+        window.location.reload();
+      });
+
       window.addEventListener('load', () => {
         navigator.serviceWorker.register('./sw.js')
           .then(() => console.log('Service Worker registered successfully!'))

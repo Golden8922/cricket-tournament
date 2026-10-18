@@ -1,4 +1,4 @@
-const CACHE_NAME = 'college-cricket-v2';
+const CACHE_NAME = 'college-cricket-v3';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -47,23 +47,33 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // For local assets: stale-while-revalidate
-  event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      const fetchPromise = fetch(event.request).then((networkResponse) => {
-        if (networkResponse && networkResponse.status === 200) {
-          const responseToCache = networkResponse.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(event.request, responseToCache);
-          });
-        }
-        return networkResponse;
-      }).catch((err) => {
-        // Network failed, cache is fallback
-        return cachedResponse;
-      });
+  // Own pages, scripts and styles: network first, so a new deployment shows up on the very
+  // first visit. The saved copy is used only when offline or when the network takes over 3 s.
+  event.respondWith((async () => {
+    const cached = await caches.match(event.request);
 
-      return cachedResponse || fetchPromise;
-    })
-  );
+    const network = fetch(event.request, { cache: 'no-cache' }).then((networkResponse) => {
+      if (networkResponse && networkResponse.status === 200) {
+        const responseToCache = networkResponse.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseToCache));
+      }
+      return networkResponse;
+    }).catch(() => null);
+
+    if (!cached) {
+      const fresh = await network;
+      if (fresh) return fresh;
+      if (event.request.mode === 'navigate') {
+        const shell = await caches.match('./index.html');
+        if (shell) return shell;
+      }
+      return Response.error();
+    }
+
+    const winner = await Promise.race([
+      network,
+      new Promise((resolve) => setTimeout(() => resolve(null), 3000))
+    ]);
+    return winner || cached;
+  })());
 });
