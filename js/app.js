@@ -295,6 +295,9 @@ const App = {
             this.showToast('Signed out successfully', 'info');
           }
         } else {
+          // Always open with an empty form (no leftover or autofilled password)
+          const form = document.getElementById('staff-login-form');
+          if (form) form.reset();
           this.openModal('modal-staff-login');
         }
       });

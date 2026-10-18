@@ -776,7 +776,7 @@
           Enter your name and the staff password to manage matches and teams. Spectators do not need an account.
         </p>
 
-        <form id="staff-login-form">
+        <form id="staff-login-form" autocomplete="off">
           <div class="form-group">
             <label class="form-label" for="login-name">Your Name <span class="req">*</span></label>
             <input type="text" id="login-name" class="form-input" placeholder="e.g. Ritik, Golden, Sharma Sir" required autocomplete="name">
@@ -792,7 +792,7 @@
 
           <div class="form-group">
             <label class="form-label" for="login-password">Password <span class="req">*</span></label>
-            <input type="password" id="login-password" class="form-input" placeholder="Enter password" required autocomplete="current-password">
+            <input type="password" id="login-password" class="form-input" placeholder="Enter password" required autocomplete="new-password" autocapitalize="off" spellcheck="false">
           </div>
 
           <button type="submit" class="btn-primary btn-full" style="margin-top: 8px;">
