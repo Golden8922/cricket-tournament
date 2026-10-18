@@ -230,10 +230,12 @@ const AppDB = {
         } else {
           this._pushRetryAt = Date.now() + this.CLOUD.PUSH_RETRY_MS;
           console.warn('Cloud sync push rejected:', res.status);
+          this.setConnectionStatus('reconnecting');
         }
       } catch (err) {
         this._pushRetryAt = Date.now() + this.CLOUD.PUSH_RETRY_MS;
         console.warn('Cloud sync push warning:', err.message);
+        if (navigator.onLine !== false) this.setConnectionStatus('reconnecting');
       } finally {
         this._cloudPushPromise = null;
         if (this._cloudPushQueued) {
@@ -272,6 +274,26 @@ const AppDB = {
 
     changed.forEach(section => this.notifyListeners(section));
     if (changed.length > 0) this.broadcast('cloud_sync');
+  },
+
+  // One-time recovery per device: matches that were scored here by an older version
+  // but never reached the cloud are merged in and pushed once staff sign in.
+  migrateLocalMatches(remote) {
+    const FLAG = 'cct_matches_migrated_v2';
+    if (!this.getAuthToken() || localStorage.getItem(FLAG)) return;
+    localStorage.setItem(FLAG, '1');
+
+    const remoteMatches = Array.isArray(remote.matches) ? remote.matches : [];
+    const remoteIds = new Set(remoteMatches.map(m => m && m.id));
+    const missing = this.getLocalMatches().filter(m => m && m.id && !remoteIds.has(m.id));
+    if (missing.length === 0) return;
+
+    const merged = [...missing, ...remoteMatches].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    localStorage.setItem(this.STORAGE_KEYS.MATCHES, JSON.stringify(merged));
+    this.markDirty(['matches']);
+    this.notifyListeners('matches');
+    this.broadcast('matches');
+    this.pushToCloud();
   },
 
   async pullFromCloud() {
@@ -322,6 +344,7 @@ const AppDB = {
         return;
       }
 
+      this.migrateLocalMatches(remoteData);
       this.applyRemote(remoteData);
       this.setConnectionStatus('online');
     } catch (err) {

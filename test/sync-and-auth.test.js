@@ -257,3 +257,26 @@ test('an expired session is not treated as staff', () => {
   assert.equal(db.isStaff(), false);
   assert.equal(db.isAdmin(), false);
 });
+
+test('matches scored by an older version are recovered once, then pushed (one-time migration)', async () => {
+  const remote = { updatedAt: 100, players: [{ id: 'p' }], teams: [{ id: 't' }], matches: [] };
+  const { db, storage, calls } = loadDb({
+    fetchImpl: async (u, o) => (o.method === 'POST'
+      ? ok({ status: 'ok', updatedAt: 200, data: { updatedAt: 200, players: [{ id: 'p' }], teams: [{ id: 't' }] } })
+      : ok(remote))
+  });
+  storage.set('cct_matches', JSON.stringify([{ id: 'm_old', createdAt: 1, status: 'done' }]));
+  await db.pullFromCloud();
+  await new Promise((r) => setTimeout(r, 10));
+
+  const sent = posts(calls);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(JSON.parse(sent[0].body).sections.matches.map((m) => m.id), ['m_old']);
+  assert.deepEqual(JSON.parse(storage.get('cct_matches')).map((m) => m.id), ['m_old'], 'local match kept');
+  assert.deepEqual(db.getDirty(), []);
+
+  // second run must not resurrect anything
+  storage.set('cct_matches', JSON.stringify([]));
+  await db.pullFromCloud();
+  assert.equal(posts(calls).length, 1);
+});
