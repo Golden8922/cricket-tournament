@@ -366,6 +366,53 @@ const App = {
   },
 
   // ==========================================
+  // ADD A PLAYER DURING A LIVE MATCH
+  // ==========================================
+  openLiveAddPlayerModal() {
+    const match = this.activeScoringMatch;
+    if (!match) {
+      this.showToast('Start a match first', 'error');
+      return;
+    }
+    const form = document.getElementById('form-live-add-player');
+    if (form) form.reset();
+    const battingTeam = match.currentInnings === 2 ? match.teamB : match.teamA;
+    const bowlingTeam = match.currentInnings === 2 ? match.teamA : match.teamB;
+    const select = document.getElementById('live-player-team');
+    if (select) {
+      select.innerHTML = [battingTeam, bowlingTeam].map((name, i) =>
+        `<option value="${this.escapeHtml(name)}">${this.escapeHtml(name)} (${i === 0 ? 'batting' : 'bowling'})</option>`).join('');
+    }
+    this.openModal('modal-live-add-player');
+  },
+
+  async submitLiveAddPlayer() {
+    const live = this.activeScoringMatch;
+    if (!live) return;
+    const val = (id) => (document.getElementById(id)?.value || '').trim();
+    const name = val('live-player-name');
+    const teamName = val('live-player-team');
+    const role = val('live-player-role') || 'All-rounder';
+    const roll = val('live-player-roll') || ('LIVE-' + Date.now().toString(36).toUpperCase());
+    if (!name) {
+      this.showToast('Please enter the player name', 'error');
+      return;
+    }
+    try {
+      const player = await AppDB.addPlayer({ name, roll, role, exp: 2, bat: 3, bowl: 3, field: 3, keeper: false }, teamName);
+      // The match keeps its own list of who is playing: add the new player to it as well
+      const fresh = await AppDB.getMatch(live.id);
+      const key = teamName === fresh.teamA ? 'teamAPlayerIds' : 'teamBPlayerIds';
+      await AppDB.updateMatch(live.id, { [key]: [...(fresh[key] || []), player.id] });
+      this.closeModal('modal-live-add-player');
+      this.showToast(`${name} added to ${teamName}`, 'success');
+      this.renderScoringConsole();
+    } catch (err) {
+      this.showToast(err.message, 'error');
+    }
+  },
+
+  // ==========================================
   // BOWLER RULES: overs limit + next bowler prompt
   // ==========================================
   getCurrentInningsStats(match) {
@@ -1508,7 +1555,12 @@ const App = {
       btnStart.addEventListener('click', async () => {
         const teamAVal = document.getElementById('match-team-a').value;
         const teamBVal = document.getElementById('match-team-b').value;
-        const oversVal = Number(document.getElementById('match-overs').value) || 5;
+        const oversVal = Number(document.getElementById('match-overs').value);
+
+        if (!Number.isInteger(oversVal) || oversVal < 1 || oversVal > 50) {
+          this.showToast('Please enter the overs as a whole number from 1 to 50', 'error');
+          return;
+        }
 
         if (teamAVal === teamBVal) {
           this.showToast('Please select two different teams!', 'error');
@@ -1699,6 +1751,19 @@ const App = {
         if (this.activeScoringMatch) {
           this.confirmDeleteMatch(this.activeScoringMatch.id);
         }
+      });
+    }
+
+    // Add a player while the match is live
+    const btnLiveAddPlayer = document.getElementById('btn-live-add-player');
+    if (btnLiveAddPlayer) {
+      btnLiveAddPlayer.addEventListener('click', () => this.openLiveAddPlayerModal());
+    }
+    const formLiveAddPlayer = document.getElementById('form-live-add-player');
+    if (formLiveAddPlayer) {
+      formLiveAddPlayer.addEventListener('submit', (e) => {
+        e.preventDefault();
+        this.submitLiveAddPlayer();
       });
     }
 
