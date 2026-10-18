@@ -1628,13 +1628,6 @@ html, body {
   vertical-align: middle;
 }
 
-.table-legend {
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  margin: -4px 4px 14px;
-  line-height: 1.5;
-}
-
 /* ============================================================
    Fixtures
    ============================================================ */

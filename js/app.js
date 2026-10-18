@@ -188,18 +188,6 @@ const App = {
   },
 
   // ==========================================
-  // POINTS TABLE LEGEND
-  // ==========================================
-  updateTableLegend(remainingCount = 0) {
-    const el = document.getElementById('table-legend');
-    if (!el) return;
-    const left = remainingCount === 0
-      ? 'The league stage is complete.'
-      : `${remainingCount} league match${remainingCount === 1 ? '' : 'es'} still to play.`;
-    el.innerHTML = `<span class="q-badge" style="margin-left:0">Q</span> Qualified for the final: certain to finish in the top ${this.QUALIFY_SPOTS} whatever the remaining results (points and tie-breaks considered). ${left} Teams level on points are ranked by net run rate, then wins, then head-to-head.`;
-  },
-
-  // ==========================================
   // FIXTURES / SCHEDULE
   // ==========================================
   // Pair every fixture with the result (or live match) between the same two teams
@@ -3466,7 +3454,6 @@ const App = {
     const tableRows = CricketEngine.calculatePointsTable(matches, teams);
     const remainingMatches = CricketEngine.getRemainingLeagueMatches(matches, teams, AppDB.getLocalFixtures(), this.LEAGUE_ROUNDS);
     const qualified = CricketEngine.computeQualification(tableRows, remainingMatches, this.QUALIFY_SPOTS);
-    this.updateTableLegend(remainingMatches.length);
 
     tbody.innerHTML = tableRows.map((row, idx) => {
       const rank = idx + 1;
